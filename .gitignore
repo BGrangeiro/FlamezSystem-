@@ -1,0 +1,8 @@
+config.local.json
+product-costs.local.json
+node_modules/
+sheets.local.json
+.env
+.env.*
+!.env.example
+*.log

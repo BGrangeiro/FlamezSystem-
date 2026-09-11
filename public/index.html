@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SistemaFlamez</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="/assets/flamez-favicon-white.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">
+            <img src="/assets/flamez-logo-transparent.png" alt="Logo FLAMEZ 3D" />
+          </div>
+          <div>
+            <strong>FLAMEZ 3D</strong>
+          </div>
+        </div>
+
+        <nav class="tabs" aria-label="Abas do sistema">
+          <button class="tab active" data-sheet="produtos" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5v8l-9 5-9-5V8l9-5Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg><span>Produtos</span></button>
+          <button class="tab" data-sheet="encomendas" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V2h6v2M9 10h6M9 14h6M9 18h3"/></svg><span>Encomendas</span></button>
+          <button class="tab" data-sheet="producao" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21V8l6 4V8l6 4V3h4v18H4Z"/><path d="M8 17h1m4 0h1"/></svg><span>Produção</span></button>
+          <button class="tab" data-sheet="filamentos" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="m6 6 4 4m4 4 4 4m0-12-4 4m-4 4-4 4"/></svg><span>Filamentos</span></button>
+          <button class="tab" data-sheet="maquinas" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8V3h12v5M6 17H4V8h16v9h-2"/><path d="M7 14h10v7H7zM16 11h1"/></svg><span>Máquinas</span></button>
+          <button class="tab" data-sheet="reposicao" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a5 5 0 0 0-6.3 6.3L3 18l3 3 5.2-5.2a5 5 0 0 0 6.3-6.3L14 13l-3-3 3.5-3.5Z"/></svg><span>Peças</span></button>
+          <button class="tab" data-sheet="painel" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 3v18h17M8 17v-5m5 5V7m5 10V4"/></svg><span>Painel do mês</span></button>
+        </nav>
+
+        <button id="settingsButton" class="ghost-button hidden" type="button">Configurar integração</button>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Sistema local independente</p>
+            <h1 id="viewTitle">Produtos</h1>
+          </div>
+
+          <div class="actions">
+            <span id="syncStatus" class="status neutral">Dados locais</span>
+            <button id="variationButton" class="topbar-button hidden" type="button">Adicionar variação</button>
+            <button id="refreshButton" class="icon-button" title="Atualizar dados" type="button">↻</button>
+          </div>
+        </header>
+
+        <section class="toolbar">
+          <input id="searchInput" type="search" placeholder="Buscar..." />
+          <button id="addButton" type="button">Adicionar</button>
+        </section>
+
+        <section id="content" class="content" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <dialog id="variationDialog">
+      <form method="dialog" class="dialog-card">
+        <h2>Adicionar variação</h2>
+        <label>
+          Produto original
+          <select id="variationSource"></select>
+        </label>
+        <div class="dialog-actions">
+          <button value="cancel" class="ghost-button" type="submit">Cancelar</button>
+          <button id="createVariationButton" value="default" type="button">Criar cópia</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="emptyStateTemplate">
+      <div class="empty-state">
+        <h2>Nenhum registro encontrado</h2>
+        <p>Adicione o primeiro item ou atualize os dados locais.</p>
+      </div>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
