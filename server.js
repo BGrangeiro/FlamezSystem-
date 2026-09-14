@@ -22,6 +22,13 @@ const mimeTypes = {
 };
 
 const DEFAULT_LOCAL_SHEETS = {
+  productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade'],rows:[]},
+  filamentSettings: {
+    sheet: "filamentSettings",
+    sheetName: "Configurações de filamento",
+    headers: ["Marca", "Modelo", "Linha do material", "Cor", "Melhor taxa de fluxo", "Melhor temperatura", "Foto", "Tipo"],
+    rows: []
+  },
   produtos: {
     sheet: "produtos",
     sheetName: "Produtos",
@@ -115,6 +122,7 @@ const DEFAULT_LOCAL_SHEETS = {
 };
 
 function migrateLocalSheet(key, sheet) {
+  if(key === 'filamentSettings') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.filamentSettings.headers};
   if (key === "maquinas") {
     return { ...sheet, headers: MACHINE_HEADERS, rows: sheet.rows.map((row) => ({
       ...row, data: normalizeMachineData(row.data || {})
@@ -220,6 +228,25 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
   }
 
   const targetRowNumber = Number(rowNumber || 0) || nextRowNumber(sheet.rows);
+  if(sheetKey === 'productStock') {
+    const sku = String(rowData.SKU || '').trim();
+    const quantity = machineNumber(rowData.Quantidade);
+    if(!sku || !Number.isSafeInteger(quantity) || quantity < 0) throw Object.assign(new Error('Informe um SKU e uma quantidade inteira maior ou igual a zero.'),{statusCode:400});
+    if(!data.sheets.produtos.rows.some(row=>String(row.data.SKU || '').trim() === sku)) throw Object.assign(new Error('Este SKU não está cadastrado em Produtos.'),{statusCode:400});
+    if(sheet.rows.some(row=>row.rowNumber !== targetRowNumber && row.data.SKU === sku)) throw Object.assign(new Error('Este SKU já possui estoque. Atualize a página para editar a quantidade existente.'),{statusCode:400});
+    rowData={SKU:sku,Quantidade:String(quantity)};
+  }
+  if (sheetKey === 'filamentSettings') {
+    const invalid = message => Object.assign(new Error(message), {statusCode:400});
+    if (!['marca','filamento'].includes(rowData.Tipo) || !String(rowData.Marca || '').trim()) throw invalid('Informe a marca.');
+    if (rowData.Tipo === 'filamento' && (!String(rowData.Modelo || '').trim() || !String(rowData.Cor || '').trim())) throw invalid('Informe modelo e cor.');
+    for (const key of sheet.headers.filter(key=>key !== 'Foto')) if (String(rowData[key] || '').length > 160) throw invalid('Campo muito longo.');
+    if (rowData.Foto && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(rowData.Foto) || rowData.Foto.length > 2000000)) throw invalid('Foto inválida ou muito grande.');
+    const flow = String(rowData['Melhor taxa de fluxo'] || '').replace(',','.');
+    if (flow && (!/^\d+(?:\.\d+)?$/.test(flow) || Number(flow) <= 0)) throw invalid('Taxa de fluxo inválida.');
+    const temperature = rowData['Melhor temperatura'];
+    if (temperature && (!Number.isFinite(Number(temperature)) || Number(temperature) < 0 || Number(temperature) > 500)) throw invalid('Temperatura inválida.');
+  }
   if (sheetKey === "maquinas") {
     const existing = sheet.rows.find((row) => Number(row.rowNumber) === targetRowNumber);
     const desiredHours = rowData["Horas de uso"];
@@ -303,7 +330,30 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
   };
 }
 
-async function deleteLocalRow(sheetKey, rowNumber) {
+function requireProductionPassword(password) {
+  if(password !== '1234') throw Object.assign(new Error('Senha incorreta. A produção não foi removida.'),{statusCode:403});
+}
+
+async function removeProductionItem(rowNumber,itemIndex,password) {
+  requireProductionPassword(password);
+  const data=await readLocalSheets();
+  const row=data.sheets.producao.rows.find(row=>row.rowNumber===Number(rowNumber));
+  if(!row) throw Object.assign(new Error('Produção não encontrada.'),{statusCode:404});
+  const items=JSON.parse(row.data['Itens da produção'] || '[]');
+  if(!Number.isInteger(itemIndex)||itemIndex<0||itemIndex>=items.length) throw Object.assign(new Error('Item não encontrado. Atualize a página.'),{statusCode:400});
+  items.splice(itemIndex,1);
+  if(!items.length) data.sheets.producao.rows=data.sheets.producao.rows.filter(r=>r!==row);
+  else {
+    row.data['Itens da produção']=JSON.stringify(items);
+    for(const [field,value] of [['Quantidade produzida',items.reduce((n,i)=>n+Number(i.quantity||0),0)],['Peso (g)',items.reduce((n,i)=>n+Number(i.used||0)+Number(i.waste||0),0)],['Desperdício (g)',items.reduce((n,i)=>n+Number(i.waste||0),0)],['Custo do filamento (R$)',items.reduce((n,i)=>n+Number(i.total||0),0)],['Custo de máquinas (R$)',items.reduce((n,i)=>n+Number(i.machineCost||0),0)]]) row.data[field]=String(value);
+    row.data['Código do produto']=items.map(i=>i.sku||i.name).join(', ');
+  }
+  await writeLocalSheets(data);
+  return {ok:true};
+}
+
+async function deleteLocalRow(sheetKey, rowNumber, password) {
+  if(sheetKey === 'producao') requireProductionPassword(password);
   const data = await readLocalSheets();
   const sheet = data.sheets[sheetKey];
 
@@ -428,6 +478,10 @@ async function serveStatic(requestUrl, response) {
 
 async function handleApi(request, response, url) {
   try {
+    if(url.pathname === '/api/production/remove-item' && request.method === 'POST') {
+      const body=await readBody(request);
+      sendJson(response,200,await removeProductionItem(body.rowNumber,body.itemIndex,body.password));return;
+    }
     if (url.pathname === "/api/products/rename" && request.method === "POST") {
       const body = await readBody(request);
       sendJson(response, 200, await renameProduct(body.rowNumber, body.name));
@@ -463,7 +517,7 @@ async function handleApi(request, response, url) {
 
     if (url.pathname === "/api/sheets/delete" && request.method === "POST") {
       const body = await readBody(request);
-      sendJson(response, 200, await deleteLocalRow(String(body.sheet || ""), body.rowNumber));
+      sendJson(response, 200, await deleteLocalRow(String(body.sheet || ""), body.rowNumber, body.password));
       return;
     }
 

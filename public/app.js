@@ -1,8 +1,10 @@
 import { renderMonthlyPanel } from './monthly-panel.js';
+import { renderFilamentSettings } from './filament-settings.js';
 import { MACHINE_HEADERS, calculateMachineCost, normalizeMachineData, machineNumber, maintenanceProgress } from "./machine-costs.js";
 import { renderProduction } from "./production.js";
 
 const SHEETS = {
+  productStock: {title:'Estoque de produtos'},
   painel: {title: "Painel do mês"},
   produtos: {
     title: "Produtos",
@@ -140,6 +142,7 @@ const LOCAL_PRODUCT_COSTS_KEY = "sistemaFlamez.productCosts";
 const LOCAL_AUTOSAVE_DELAY_MS = 700;
 
 const state = {
+  filamentTab: 'stock',
   activeSheet: "produtos",
   config: { mode: "local" },
   headers: [],
@@ -860,6 +863,39 @@ async function saveRow(sheet, rowNumber, data, button) {
   }
 }
 
+function productionRemovalPassword() {
+  return new Promise(resolve=>{
+    const dialog=document.createElement('dialog');dialog.className='filament-dialog';
+    const form=document.createElement('form');form.className='filament-editor';
+    const title=document.createElement('h2');title.textContent='Remover produção';
+    const text=document.createElement('p');text.textContent='A produção será removida e suas horas serão retiradas da máquina. Digite a senha para confirmar.';
+    const label=document.createElement('label');label.className='field';label.textContent='Senha';
+    const input=document.createElement('input');input.type='password';input.inputMode='numeric';input.required=true;input.autocomplete='off';label.append(input);
+    const error=document.createElement('p');error.id='production-password-error';error.setAttribute('role','alert');error.style.color='#b91c1c';error.style.margin='0';error.hidden=true;
+    input.setAttribute('aria-describedby',error.id);
+    input.oninput=()=>{error.hidden=true;error.textContent='';input.removeAttribute('aria-invalid');};
+    const actions=document.createElement('div');actions.className='row-actions';
+    const cancel=document.createElement('button');cancel.type='button';cancel.className='ghost-light-button';cancel.textContent='Cancelar';cancel.onclick=()=>dialog.close();
+    const confirm=document.createElement('button');confirm.type='submit';confirm.className='danger-button';confirm.textContent='Remover produção';actions.append(cancel,confirm);
+    let password=null;
+    form.onsubmit=event=>{
+      event.preventDefault();
+      if(input.value!=='1234'){
+        error.textContent='Senha incorreta. Tente novamente.';error.hidden=false;
+        input.setAttribute('aria-invalid','true');input.focus();input.select();return;
+      }
+      password=input.value;dialog.close();
+    };
+    dialog.addEventListener('close',()=>{dialog.remove();resolve(password);});form.append(title,text,label,error,actions);dialog.append(form);document.body.append(dialog);dialog.showModal();
+  });
+}
+
+async function removeProductionItem(rowNumber,itemIndex) {
+  const password=await productionRemovalPassword();if(password===null)return;
+  try {await api('/api/production/remove-item',{method:'POST',body:JSON.stringify({rowNumber,itemIndex,password})});await loadSheet('producao');setStatus('Item removido e horas das máquinas atualizadas','ok');}
+  catch(error){setStatus(error.message,'error');}
+}
+
 async function deleteRow(sheet, rowNumber) {
   if (!rowNumber) {
     state.draft = null;
@@ -869,12 +905,14 @@ async function deleteRow(sheet, rowNumber) {
     return;
   }
 
+  const password=sheet === 'producao' ? await productionRemovalPassword() : undefined;
+  if(password===null)return;
   setStatus("Excluindo localmente", "warning");
 
   try {
     await api("/api/sheets/delete", {
       method: "POST",
-      body: JSON.stringify({ sheet, rowNumber })
+      body: JSON.stringify({ sheet, rowNumber, password })
     });
     if (sheet === "encomendas") {
       state.editingOrders.delete(String(rowNumber));
@@ -1000,7 +1038,7 @@ function renderProductSummaryCell(row, header, isDraft = false, rowKey = "") {
 
 function renderProductCostPanel(row, isDraft) {
   const details = document.createElement("div");
-  details.className = "product-details";
+  details.className = "product-details product-workspace";
 
   if (isDraft) {
     details.append(renderNewProductForm(row));
@@ -1031,7 +1069,8 @@ function renderProductCostPanel(row, isDraft) {
     details.append(renderProductVariations(row, variations, selectedRow));
   }
 
-  details.append(renderProductNameField(selectedRow));
+  const identity = renderProductNameField(selectedRow);
+  details.append(identity);
   const modelLink = driveModelDownloadUrl(valueOf(selectedRow, "STL/3MF"));
   if (modelLink) {
     const download = document.createElement("a");
@@ -1040,7 +1079,7 @@ function renderProductCostPanel(row, isDraft) {
     download.target = "_blank";
     download.rel = "noopener noreferrer";
     download.textContent = "Baixar modelo";
-    details.append(download);
+    identity.querySelector('.product-identity-actions').append(download);
   }
   details.append(nav);
 
@@ -1098,7 +1137,8 @@ function renderProductNameField(row) {
       input.disabled = false;
     }
   });
-  form.append(label, save);
+  const actions = document.createElement('div');actions.className = 'product-identity-actions';actions.append(save);
+  form.append(label, actions);
   return form;
 }
 
@@ -1184,7 +1224,19 @@ function renderUnitCostCalculator(row, key) {
     panel.append(renderCostBreakdown(result, true));
   }
 
-  panel.append(renderCostTabs(row, key, cost, result));
+  const editor = document.createElement('details'); editor.className = 'product-cost-disclosure';
+  const summary = document.createElement('summary');summary.textContent = 'Editar custos e materiais';
+  editor.append(summary);
+  state.openProductCostEditors ||= new Set();
+  editor.open = state.openProductCostEditors.has(key);
+  let mounted = false;
+  const mount = () => { if(!mounted) {editor.append(renderCostTabs(row,key,cost,result));mounted = true;} };
+  if(editor.open) mount();
+  editor.addEventListener('toggle',()=>{
+    if(editor.open) {state.openProductCostEditors.add(key);mount();}
+    else state.openProductCostEditors.delete(key);
+  });
+  panel.append(editor);
   return panel;
 }
 
@@ -1241,9 +1293,7 @@ function renderNewProductForm(row) {
       };
       input.addEventListener("input", updateLink);
       updateLink();
-      const hint = document.createElement("small");
-      hint.textContent = "Use o link do arquivo. O Drive pode pedir acesso ou confirmação para baixar.";
-      field.append(download, hint);
+      field.append(download);
     }
     grid.append(field);
   });
@@ -2371,6 +2421,32 @@ function renderMachines() {
   });
 }
 
+function renderProductStock() {
+  elements.content.replaceChildren();
+  const grid = document.createElement('div');grid.className='product-stock-grid';
+  const term=elements.searchInput.value.trim().toLocaleLowerCase();
+  const products=new Map();
+  for(const product of state.stockProducts || []) {
+    const sku=String(product.data.SKU || '').trim();
+    if(sku && !products.has(sku)) products.set(sku,product.data.Produto || sku);
+  }
+  const hint=document.createElement('p');hint.className='machine-formula';hint.textContent='Informe a quantidade disponível de cada SKU. O estoque é atualizado manualmente.';elements.content.append(hint);
+  for(const [sku,name] of products) {
+    if(term && !`${sku} ${name}`.toLocaleLowerCase().includes(term)) continue;
+    const existing=state.rows.find(row=>row.data.SKU===sku);
+    const form=document.createElement('form');form.className='product-stock-card';
+    const title=document.createElement('h3');title.textContent=name;
+    const code=document.createElement('strong');code.className='stock-sku';code.textContent=sku;
+    const label=document.createElement('label');label.className='field';label.textContent='Quantidade em estoque (un)';
+    const input=document.createElement('input');input.type='number';input.min='0';input.step='1';input.required=true;input.value=existing?.data.Quantidade ?? '0';label.append(input);
+    const save=document.createElement('button');save.type='submit';save.className='primary-button';save.textContent='Salvar estoque';
+    form.append(title,code,label,save);grid.append(form);
+    form.addEventListener('submit',async event=>{event.preventDefault();const quantity=Number(input.value);if(!Number.isSafeInteger(quantity)||quantity<0){setStatus('Informe uma quantidade inteira maior ou igual a zero.','error');return;}await saveRow('productStock',existing?.rowNumber ?? null,{SKU:sku,Quantidade:String(quantity)},save);});
+  }
+  if(!grid.children.length){const empty=document.createElement('p');empty.className='empty-state';empty.textContent=term?'Nenhum SKU encontrado.':'Cadastre produtos com SKU na aba Produtos para informar o estoque.';grid.append(empty);}
+  elements.content.append(grid);
+}
+
 function renderGenericTable() {
   const rows = filteredRows();
   elements.content.replaceChildren();
@@ -2381,7 +2457,7 @@ function renderGenericTable() {
   }
 
   const wrap = document.createElement("div");
-  wrap.className = "table-wrap";
+  wrap.className = `table-wrap${state.activeSheet === 'filamentos' ? ' filament-stock-table' : ''}`;
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
@@ -2405,14 +2481,34 @@ function renderGenericTable() {
 
     state.headers.forEach((header) => {
       const td = document.createElement("td");
-      const input = document.createElement("input");
+      const priority = state.activeSheet === 'filamentos' && header === 'Urgência de compra';
+      const input = document.createElement(priority ? "select" : "input");
+      if (priority) {
+        input.append(new Option('Selecionar', ''));
+        ['Baixa', 'Média', 'Alta'].forEach(level => input.append(new Option(level, `${level} Prioridade`)));
+      }
       input.className = "table-input";
       input.name = header;
-      input.type = guessInputType(header);
+      if (!priority) input.type = guessInputType(header);
       input.value = valueOf(row, header);
+      if (priority) {
+        const original = valueOf(row, header);
+        if (original && !input.value) {
+          const match = /alta/i.test(original) ? 'Alta' : /m[eé]dia/i.test(original) ? 'Média' : /baixa|pouca/i.test(original) ? 'Baixa' : null;
+          if (match) input.value = `${match} Prioridade`;
+          else { input.append(new Option(original, original)); input.value = original; }
+        }
+        const color = () => { input.dataset.priority = /alta/i.test(input.value) ? 'high' : /m[eé]dia/i.test(input.value) ? 'medium' : input.value ? 'low' : ''; };
+        input.addEventListener('change', color); color();
+      }
       if (header === "Última manutenção") input.type = "date";
       inputs[header] = input;
-      td.append(input);
+      if(state.activeSheet === 'filamentos' && header === 'Custo médio por kg') {
+        const currency = document.createElement('div'); currency.className = 'filament-currency';
+        const prefix = document.createElement('span'); prefix.textContent = 'R$';
+        input.inputMode = 'decimal'; input.setAttribute('aria-label','Custo médio por kg em reais');
+        currency.append(prefix,input);td.append(currency);
+      } else td.append(input);
       tr.append(td);
     });
 
@@ -2453,7 +2549,7 @@ function render() {
     else tab.removeAttribute("aria-current");
   });
   elements.settingsButton?.classList.add("hidden");
-  elements.addButton.classList.toggle("hidden",state.activeSheet === "painel");
+  elements.addButton.classList.toggle("hidden",['painel','productStock'].includes(state.activeSheet));
   elements.searchInput.classList.toggle("hidden",state.activeSheet === "painel");
   elements.variationButton.classList.toggle("hidden", state.activeSheet !== "produtos");
   elements.addButton.textContent = state.activeSheet === "produtos"
@@ -2471,7 +2567,9 @@ function render() {
     return;
   }
 
-  if (state.activeSheet === "painel") {
+  if (state.activeSheet === 'productStock') {
+    renderProductStock();
+  } else if (state.activeSheet === "painel") {
     renderMonthlyPanel({state,elements,formatMoney,formatNumber,todayInputValue});
   } else if (state.activeSheet === "produtos") {
     renderProducts();
@@ -2480,7 +2578,23 @@ function render() {
   } else if (state.activeSheet === "maquinas") {
     renderMachines();
   } else if (state.activeSheet === "producao") {
-    renderProduction({ state, elements, escapeHtml, formatMoney, formatNumber, formatDateDisplay, productKey, render, saveRow, deleteRow, todayInputValue });
+    renderProduction({ state, elements, escapeHtml, formatMoney, formatNumber, formatDateDisplay, productKey, render, saveRow, deleteRow, removeProductionItem, todayInputValue });
+  } else if (state.activeSheet === 'filamentos') {
+    if (state.filamentTab === 'stock') renderGenericTable();
+    else elements.content.replaceChildren();
+    const nav = document.createElement('div'); nav.className = 'product-section-tabs';
+    [['stock','Estoque de filamentos'],['settings','Configurações de filamento']].forEach(([id,label])=>{
+      const button = document.createElement('button'); button.type = 'button';
+      button.className = `product-section-tab${state.filamentTab === id ? ' active' : ''}`; button.textContent = label;
+      button.addEventListener('click',()=>{state.filamentTab = id; render();}); nav.append(button);
+    });
+    elements.content.prepend(nav);
+    elements.addButton.classList.toggle('hidden',state.filamentTab === 'settings');
+    elements.searchInput.classList.toggle('hidden',state.filamentTab === 'settings');
+    if (state.filamentTab === 'settings') {
+      const host = document.createElement('section'); elements.content.append(host);
+      renderFilamentSettings(host, api, setStatus);
+    }
   } else {
     renderGenericTable();
   }
@@ -2505,6 +2619,11 @@ async function loadSheet(sheet = state.activeSheet) {
 
   try {
     const payload = await api(`/api/sheets?sheet=${encodeURIComponent(sheet === "painel" ? "producao" : sheet)}`);
+    if(sheet === 'productStock') {
+      const products = await api('/api/sheets?sheet=produtos');
+      if(requestId !== state.loadRequestId) return;
+      state.stockProducts = products.rows || [];
+    }
     if (sheet === "painel") {
       const machines = await api("/api/sheets?sheet=maquinas");
       if (requestId !== state.loadRequestId) return;
