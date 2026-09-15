@@ -1,3 +1,5 @@
+import {showAccessLog} from './access-log.js';
+import { renderProductStock } from './product-stock.js';
 import { renderMonthlyPanel } from './monthly-panel.js';
 import { renderFilamentSettings } from './filament-settings.js';
 import { MACHINE_HEADERS, calculateMachineCost, normalizeMachineData, machineNumber, maintenanceProgress } from "./machine-costs.js";
@@ -144,7 +146,7 @@ const LOCAL_AUTOSAVE_DELAY_MS = 700;
 const state = {
   filamentTab: 'stock',
   activeSheet: "produtos",
-  config: { mode: "local" },
+  authenticationEnabled: false,
   headers: [],
   rows: [],
   productCosts: {},
@@ -172,7 +174,6 @@ const elements = {
   tabs: [...document.querySelectorAll(".tab")],
   viewTitle: document.querySelector("#viewTitle"),
   syncStatus: document.querySelector("#syncStatus"),
-  settingsButton: document.querySelector("#settingsButton"),
   variationButton: document.querySelector("#variationButton"),
   refreshButton: document.querySelector("#refreshButton"),
   searchInput: document.querySelector("#searchInput"),
@@ -249,7 +250,7 @@ async function persistProductLocalData(key, data, options = {}) {
   const {
     button = null,
     savingText = "Salvando...",
-    successMessage = "Dados locais salvos",
+    successMessage = "Dados salvos salvos",
     errorButtonText = "Salvar",
     renderAfter = false,
     silent = false
@@ -282,13 +283,13 @@ async function persistProductLocalData(key, data, options = {}) {
   }
 }
 
-function queueProductLocalAutosave(key, data, successMessage = "Dados locais salvos automaticamente") {
+function queueProductLocalAutosave(key, data, successMessage = "Dados salvos salvos automaticamente") {
   setProductLocalData(key, data);
   state.pendingAutosaves.add(key);
   clearProductAutosave(key);
   state.autosaveTimers.set(key, setTimeout(() => {
     state.autosaveTimers.delete(key);
-    setStatus("Salvando dados locais...", "neutral");
+    setStatus("Salvando dados...", "neutral");
     persistProductLocalData(key, state.productCosts[key], {
       successMessage,
       silent: false
@@ -330,6 +331,7 @@ async function api(path, options = {}) {
       ...(options.headers || {})
     }
   });
+  if(response.status===401 && path!=="/api/auth/login") {location.assign("/login");throw new Error("Sua sessão terminou. Entre novamente.");}
   const payload = await response.json();
 
   if (!response.ok || payload.ok === false) {
@@ -811,7 +813,7 @@ function readForm(form) {
 async function saveRow(sheet, rowNumber, data, button) {
   button.disabled = true;
   button.textContent = "Salvando...";
-  setStatus("Salvando localmente", "warning");
+  setStatus("Salvando", "warning");
   const draftMeta = !rowNumber && sheet === "produtos" ? state.draftMeta : null;
 
   if (draftMeta?.type === "variation") {
@@ -863,51 +865,52 @@ async function saveRow(sheet, rowNumber, data, button) {
   }
 }
 
-function productionRemovalPassword() {
+function productionRemovalPassword(remove) {
   return new Promise(resolve=>{
     const dialog=document.createElement('dialog');dialog.className='filament-dialog';
     const form=document.createElement('form');form.className='filament-editor';
     const title=document.createElement('h2');title.textContent='Remover produção';
-    const text=document.createElement('p');text.textContent='A produção será removida e suas horas serão retiradas da máquina. Digite a senha para confirmar.';
+    const text=document.createElement('p');text.textContent='As horas e o estoque desta produção serão recalculados. Digite a senha para confirmar.';
     const label=document.createElement('label');label.className='field';label.textContent='Senha';
-    const input=document.createElement('input');input.type='password';input.inputMode='numeric';input.required=true;input.autocomplete='off';label.append(input);
-    const error=document.createElement('p');error.id='production-password-error';error.setAttribute('role','alert');error.style.color='#b91c1c';error.style.margin='0';error.hidden=true;
+    const input=document.createElement('input');input.type='password';input.required=true;input.autocomplete='off';label.append(input);
+    const error=document.createElement('p');error.id='production-password-error';error.setAttribute('role','alert');error.style.color='#b91c1c';error.style.margin='0';
     input.setAttribute('aria-describedby',error.id);
-    input.oninput=()=>{error.hidden=true;error.textContent='';input.removeAttribute('aria-invalid');};
+    input.oninput=()=>{error.textContent='';input.removeAttribute('aria-invalid');};
     const actions=document.createElement('div');actions.className='row-actions';
     const cancel=document.createElement('button');cancel.type='button';cancel.className='ghost-light-button';cancel.textContent='Cancelar';cancel.onclick=()=>dialog.close();
     const confirm=document.createElement('button');confirm.type='submit';confirm.className='danger-button';confirm.textContent='Remover produção';actions.append(cancel,confirm);
-    let password=null;
-    form.onsubmit=event=>{
-      event.preventDefault();
-      if(input.value!=='1234'){
-        error.textContent='Senha incorreta. Tente novamente.';error.hidden=false;
-        input.setAttribute('aria-invalid','true');input.focus();input.select();return;
-      }
-      password=input.value;dialog.close();
+    let removed=false,busy=false;
+    dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+    form.onsubmit=async event=>{
+      event.preventDefault();if(busy)return;busy=true;cancel.disabled=true;confirm.disabled=true;confirm.textContent='Removendo…';
+      try {await remove(input.value);removed=true;dialog.close();}
+      catch(e){error.textContent=e.message;input.setAttribute('aria-invalid','true');input.focus();input.select();}
+      finally {busy=false;cancel.disabled=false;confirm.disabled=false;confirm.textContent='Remover produção';}
     };
-    dialog.addEventListener('close',()=>{dialog.remove();resolve(password);});form.append(title,text,label,error,actions);dialog.append(form);document.body.append(dialog);dialog.showModal();
+    dialog.addEventListener('close',()=>{dialog.remove();resolve(removed);});form.append(title,text,label,error,actions);dialog.append(form);document.body.append(dialog);dialog.showModal();
   });
 }
-
 async function removeProductionItem(rowNumber,itemIndex) {
-  const password=await productionRemovalPassword();if(password===null)return;
-  try {await api('/api/production/remove-item',{method:'POST',body:JSON.stringify({rowNumber,itemIndex,password})});await loadSheet('producao');setStatus('Item removido e horas das máquinas atualizadas','ok');}
-  catch(error){setStatus(error.message,'error');}
+  const removed=await productionRemovalPassword(password=>api('/api/production/remove-item',{method:'POST',body:JSON.stringify({rowNumber,itemIndex,password})}));
+  if(removed){await loadSheet('producao');setStatus('Item removido; estoque e horas atualizados','ok');}
 }
 
 async function deleteRow(sheet, rowNumber) {
   if (!rowNumber) {
     state.draft = null;
     state.draftMeta = null;
-    setStatus("Dados locais", "ok");
+    setStatus("Dados salvos", "ok");
     render();
     return;
   }
 
-  const password=sheet === 'producao' ? await productionRemovalPassword() : undefined;
-  if(password===null)return;
-  setStatus("Excluindo localmente", "warning");
+  if(sheet==='producao') {
+    const removed=await productionRemovalPassword(password=>api('/api/sheets/delete',{method:'POST',body:JSON.stringify({sheet,rowNumber,password})}));
+    if(removed){await loadSheet(sheet);setStatus('Produção removida; estoque e horas atualizados','ok');}
+    return;
+  }
+  const password=undefined;
+  setStatus("Excluindo", "warning");
 
   try {
     await api("/api/sheets/delete", {
@@ -918,7 +921,7 @@ async function deleteRow(sheet, rowNumber) {
       state.editingOrders.delete(String(rowNumber));
     }
     await loadSheet(sheet);
-    setStatus("Linha excluída localmente", "ok");
+    setStatus("Registro excluído", "ok");
   } catch (error) {
     setStatus(error.message, "error");
   }
@@ -1008,7 +1011,8 @@ function renderProductSummaryCell(row, header, isDraft = false, rowKey = "") {
   }
 
   if (header === "Shopee") {
-    const url = valueOf(row, "Link Shopee");
+    const rawUrl = valueOf(row, "Link Shopee");
+    let url="";try{const parsed=new URL(rawUrl);if(["https:","http:"].includes(parsed.protocol))url=parsed.href;}catch{}
     const label = document.createElement("span");
     label.className = "cell-label";
     label.textContent = "Link do produto";
@@ -1369,7 +1373,7 @@ function renderCostTabs(row, key, cost, result) {
   const handleCostUpdate = () => {
     const next = readCostFromForm();
     renderLiveCostPreview(wrapper, calculateUnitCost(next));
-    queueProductLocalAutosave(key, next, "Cálculo local salvo automaticamente");
+    queueProductLocalAutosave(key, next, "Cálculo salvo automaticamente");
   };
   form.addEventListener("input", handleCostUpdate);
   form.addEventListener("change", handleCostUpdate);
@@ -1390,6 +1394,22 @@ function renderCostTabs(row, key, cost, result) {
     });
   }
 
+  if (activeTab === 'depreciation') {
+    const label=document.createElement('label');label.className='field';label.textContent='Usar custo por hora da máquina';
+    const select=document.createElement('select');select.name='depreciationMachine';select.append(new Option('Informar valor manualmente',''));
+    state.productionMachines.forEach(m=>{const option=new Option(m.data['Nome da máquina'],String(m.rowNumber));option.disabled=calculateMachineCost(normalizeMachineData(m.data))===null;select.append(option);});
+    select.value=cost.depreciationMachine||'';
+    select.onchange=()=>{
+      const machine=state.productionMachines.find(m=>String(m.rowNumber)===select.value);
+      const input=form.querySelector('[name="depreciationPerHour"]');
+      if(machine){const rate=calculateMachineCost(normalizeMachineData(machine.data));if(rate!==null)input.value=String(rate).replace('.',',');}
+      handleCostUpdate();
+    };
+    label.append(select);grid.prepend(label);
+    const rateInput=grid.querySelector('[name="depreciationPerHour"]');
+    rateInput.addEventListener('input',()=>{select.value='';});
+    const note=document.createElement('small');note.textContent='O custo da máquina já inclui manutenção e funcionamento. Confira o campo Energia para não somar esse gasto novamente.';grid.append(note);
+  }
   if (activeTab === "other") {
     grid.append(createCostTextarea("notes", "Observações do cálculo", cost.notes));
   }
@@ -1407,7 +1427,7 @@ function renderCostTabs(row, key, cost, result) {
   saveButton.className = "primary-button";
   saveButton.type = "submit";
   saveButton.dataset.saveCost = "true";
-  saveButton.textContent = "Salvar cálculo local";
+  saveButton.textContent = "Salvar cálculo";
   actions.append(saveButton);
 
   wrapper.append(nav, form, preview, actions);
@@ -1452,7 +1472,7 @@ function renderMaterialRowsField(key, cost, form) {
       ...readMaterialRows(form, { keepEmpty: true }),
       emptyMaterialRow()
     ]);
-    queueProductLocalAutosave(key, next, "Cálculo local salvo automaticamente");
+    queueProductLocalAutosave(key, next, "Cálculo salvo automaticamente");
     render();
   });
   header.append(addButton);
@@ -1496,7 +1516,7 @@ function renderMaterialRowsField(key, cost, form) {
       const currentRows = readMaterialRows(form, { keepEmpty: true });
       const nextRows = currentRows.filter((_, currentIndex) => currentIndex !== index);
       const next = withMaterialRows(current, nextRows.length ? nextRows : [emptyMaterialRow()]);
-      queueProductLocalAutosave(key, next, "Cálculo local salvo automaticamente");
+      queueProductLocalAutosave(key, next, "Cálculo salvo automaticamente");
       render();
     });
     row.append(removeButton);
@@ -1573,8 +1593,8 @@ function renderLiveCostPreview(wrapper, result) {
 async function saveProductCost(key, data, button) {
   await persistProductLocalData(key, data, {
     button,
-    successMessage: "Cálculo local salvo",
-    errorButtonText: "Salvar cálculo local",
+    successMessage: "Cálculo salvo",
+    errorButtonText: "Salvar cálculo",
     renderAfter: true
   });
 }
@@ -2421,32 +2441,6 @@ function renderMachines() {
   });
 }
 
-function renderProductStock() {
-  elements.content.replaceChildren();
-  const grid = document.createElement('div');grid.className='product-stock-grid';
-  const term=elements.searchInput.value.trim().toLocaleLowerCase();
-  const products=new Map();
-  for(const product of state.stockProducts || []) {
-    const sku=String(product.data.SKU || '').trim();
-    if(sku && !products.has(sku)) products.set(sku,product.data.Produto || sku);
-  }
-  const hint=document.createElement('p');hint.className='machine-formula';hint.textContent='Informe a quantidade disponível de cada SKU. O estoque é atualizado manualmente.';elements.content.append(hint);
-  for(const [sku,name] of products) {
-    if(term && !`${sku} ${name}`.toLocaleLowerCase().includes(term)) continue;
-    const existing=state.rows.find(row=>row.data.SKU===sku);
-    const form=document.createElement('form');form.className='product-stock-card';
-    const title=document.createElement('h3');title.textContent=name;
-    const code=document.createElement('strong');code.className='stock-sku';code.textContent=sku;
-    const label=document.createElement('label');label.className='field';label.textContent='Quantidade em estoque (un)';
-    const input=document.createElement('input');input.type='number';input.min='0';input.step='1';input.required=true;input.value=existing?.data.Quantidade ?? '0';label.append(input);
-    const save=document.createElement('button');save.type='submit';save.className='primary-button';save.textContent='Salvar estoque';
-    form.append(title,code,label,save);grid.append(form);
-    form.addEventListener('submit',async event=>{event.preventDefault();const quantity=Number(input.value);if(!Number.isSafeInteger(quantity)||quantity<0){setStatus('Informe uma quantidade inteira maior ou igual a zero.','error');return;}await saveRow('productStock',existing?.rowNumber ?? null,{SKU:sku,Quantidade:String(quantity)},save);});
-  }
-  if(!grid.children.length){const empty=document.createElement('p');empty.className='empty-state';empty.textContent=term?'Nenhum SKU encontrado.':'Cadastre produtos com SKU na aba Produtos para informar o estoque.';grid.append(empty);}
-  elements.content.append(grid);
-}
-
 function renderGenericTable() {
   const rows = filteredRows();
   elements.content.replaceChildren();
@@ -2548,7 +2542,6 @@ function render() {
     if (active) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
   });
-  elements.settingsButton?.classList.add("hidden");
   elements.addButton.classList.toggle("hidden",['painel','productStock'].includes(state.activeSheet));
   elements.searchInput.classList.toggle("hidden",state.activeSheet === "painel");
   elements.variationButton.classList.toggle("hidden", state.activeSheet !== "produtos");
@@ -2563,12 +2556,12 @@ function render() {
           : "Adicionar linha";
 
   if (state.loading) {
-    elements.content.innerHTML = `<div class="empty-state"><h2>Carregando...</h2><p>Buscando os dados locais.</p></div>`;
+    elements.content.innerHTML = `<div class="empty-state"><h2>Carregando...</h2><p>Buscando os dados.</p></div>`;
     return;
   }
 
   if (state.activeSheet === 'productStock') {
-    renderProductStock();
+    renderProductStock({state,elements,saveRow,setStatus});
   } else if (state.activeSheet === "painel") {
     renderMonthlyPanel({state,elements,formatMoney,formatNumber,todayInputValue});
   } else if (state.activeSheet === "produtos") {
@@ -2583,14 +2576,31 @@ function render() {
     if (state.filamentTab === 'stock') renderGenericTable();
     else elements.content.replaceChildren();
     const nav = document.createElement('div'); nav.className = 'product-section-tabs';
-    [['stock','Estoque de filamentos'],['settings','Configurações de filamento']].forEach(([id,label])=>{
+    [['stock','Estoque de filamentos'],['settings','Configurações de filamento'],['log','Log']].forEach(([id,label])=>{
       const button = document.createElement('button'); button.type = 'button';
       button.className = `product-section-tab${state.filamentTab === id ? ' active' : ''}`; button.textContent = label;
       button.addEventListener('click',()=>{state.filamentTab = id; render();}); nav.append(button);
     });
     elements.content.prepend(nav);
-    elements.addButton.classList.toggle('hidden',state.filamentTab === 'settings');
-    elements.searchInput.classList.toggle('hidden',state.filamentTab === 'settings');
+    elements.addButton.classList.toggle('hidden',state.filamentTab !== 'stock');
+    elements.searchInput.classList.toggle('hidden',state.filamentTab !== 'stock');
+    if(state.filamentTab === 'log') {
+      const host=document.createElement('section');host.className='filament-log';elements.content.append(host);host.textContent='Carregando movimentações…';
+      api('/api/sheets?sheet=filamentLog').then(data=>{
+        host.replaceChildren();
+        if(!data.rows.length){host.textContent='Nenhuma movimentação registrada.';return;}
+        const groups=new Map();
+        [...data.rows].reverse().forEach(row=>{const day=new Date(row.data.Data).toLocaleDateString('pt-BR');if(!groups.has(day))groups.set(day,[]);groups.get(day).push(row);});
+        for(const [day,rows] of groups){
+          const section=document.createElement('details');section.className='production-item';section.open=true;
+          const title=document.createElement('summary');title.textContent=day+' · '+rows.length+' movimentações';section.append(title);
+          for(const {data:r} of rows){const card=document.createElement('article');card.className='filament-log-entry';
+            const heading=document.createElement('strong');heading.textContent=r.Movimento+' · '+formatNumber(Number(r['Quantidade (g)']))+' g · '+r.Filamento;
+            const desc=document.createElement('p');desc.textContent=r.Produção+' · '+r.Status+' · Produção: '+r['Dia da produção']+' · Saldo: '+formatNumber(Number(r['Saldo (kg)']))+' kg';card.append(heading,desc);section.append(card);}
+          host.append(section);
+        }
+      }).catch(e=>{host.textContent=e.message;});
+    }
     if (state.filamentTab === 'settings') {
       const host = document.createElement('section'); elements.content.append(host);
       renderFilamentSettings(host, api, setStatus);
@@ -2600,14 +2610,22 @@ function render() {
   }
 }
 
-async function loadConfig() {
-  state.config = { mode: "local" };
-  setStatus("Dados locais", "ok");
+async function initializeSession() {
+  const session=await api('/api/auth/session');state.authenticationEnabled=session.enabled;
+  const logout=document.querySelector('#logoutButton');logout.hidden=!session.enabled;
+  const accessButton=document.querySelector('#accessButton');accessButton.hidden=!session.enabled;accessButton.onclick=()=>showAccessLog(api);
+  logout.onclick=async()=>{
+    logout.disabled=true;
+    const results=await Promise.all([...state.pendingAutosaves].map(key=>persistProductLocalData(key,state.productCosts[key])));
+    if(results.some(result=>!result)){logout.disabled=false;setStatus('Salve as alterações pendentes antes de sair.','error');return;}
+    try {await api('/api/auth/logout',{method:'POST',body:'{}'});localStorage.removeItem(LOCAL_PRODUCT_COSTS_KEY);location.assign('/login?manual=1');}
+    catch(e){logout.disabled=false;setStatus(e.message,'error');}
+  };
 }
 
 async function loadProductCosts() {
   const payload = await api("/api/product-costs");
-  state.productCosts = mergeProductCosts(payload.costs || {}, readMirroredProductCosts());
+  state.productCosts = state.authenticationEnabled ? (payload.costs || {}) : mergeProductCosts(payload.costs || {}, readMirroredProductCosts());
   mirrorProductCosts();
 }
 
@@ -2624,12 +2642,19 @@ async function loadSheet(sheet = state.activeSheet) {
       if(requestId !== state.loadRequestId) return;
       state.stockProducts = products.rows || [];
     }
+    if (sheet === "produtos") {
+      const machines=await api("/api/sheets?sheet=maquinas");
+      if(requestId !== state.loadRequestId)return;
+      state.productionMachines=machines.rows||[];
+    }
     if (sheet === "painel") {
       const machines = await api("/api/sheets?sheet=maquinas");
       if (requestId !== state.loadRequestId) return;
       state.productionMachines = machines.rows || [];
     }
     if (sheet === "producao") {
+      const filaments=await api("/api/sheets?sheet=filamentos");
+      state.productionFilaments=filaments.rows||[];
       const products = await api("/api/sheets?sheet=produtos");
       const machines = await api("/api/sheets?sheet=maquinas");
       if (requestId !== state.loadRequestId) return;
@@ -2642,7 +2667,7 @@ async function loadSheet(sheet = state.activeSheet) {
     state.rows = payload.rows || [];
     state.draft = null;
     state.loading = false;
-    setStatus("Dados locais", "ok");
+    setStatus("Dados salvos", "ok");
     render();
   } catch (error) {
     if (requestId !== state.loadRequestId) return;
@@ -2705,6 +2730,8 @@ elements.createVariationButton.addEventListener("click", () => {
   startVariationDraft(sourceRow);
 });
 
-await loadConfig();
-await loadProductCosts();
-await loadSheet(state.activeSheet);
+try {
+  await initializeSession();
+  await loadProductCosts();
+  await loadSheet(state.activeSheet);
+} catch(error) {setStatus(error.message,'error');}

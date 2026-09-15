@@ -1,150 +1,168 @@
-# Sistema Flamez local
+# Sistema Flamez
 
-Sistema local e independente para controlar produtos, encomendas, produção, filamentos, máquinas e peças pelo navegador.
+Sistema de gestão para produção em impressão 3D: produtos, custos, encomendas, filamentos, máquinas, estoque de produtos e indicadores. Interface em português, responsiva, com servidor Node.js e armazenamento persistente no servidor.
 
-Os dados principais ficam salvos em `sheets.local.json`. Os cálculos e configurações locais dos produtos ficam em `product-costs.local.json`.
+**O projeto está preparado para instalação; nenhuma publicação é feita automaticamente.** Não existe integração com Google Planilhas. Os links do Google Drive para baixar modelos STL/3MF continuam funcionando.
 
-## Modo local
+## Requisitos e execução local
 
-O sistema não depende mais do Google Sheets para abrir, criar, editar ou excluir registros. A antiga planilha foi usada apenas como importação inicial dos dados que já existiam.
+- Node.js **22.16 ou superior**; use a versão 22 LTS atualizada na hospedagem.
+- Um único processo do sistema por diretório de dados.
+- Não há dependências de produção de terceiros.
 
-No futuro, a integração com planilha pode voltar como importação/exportação, mas o sistema atual usa os arquivos locais como fonte principal.
-
-## Como rodar
-
-Requer Node.js 18 ou superior. Clone o repositório e entre na pasta do projeto.
-Não há dependências externas para instalar.
-
-```bash
+```sh
+npm ci
 npm start
 ```
 
-Depois abra:
+Abra `http://localhost:5177`. Sem configuração, o servidor aceita apenas conexões locais, mantém os arquivos de dados existentes e preserva a senha de exclusão `1234`.
+
+Para configurar, copie `.env.example` para `.env`. O servidor carrega esse arquivo automaticamente. Não envie `.env`, senhas, backups ou dados da empresa ao GitHub.
+
+## Funcionalidades
+
+- **Produtos:** cadastro, nomes e variações, calculadora por lote, seleção de máquina para custo por hora, anúncios Shopee, observações e download de modelos do Drive.
+- **Encomendas:** pedidos e acompanhamento das etapas, em cartões expansíveis.
+- **Produção:** agrupamento por dia, produtos e produções avulsas, máquina, material, marca, cor, consumo, status e custos históricos.
+- **Filamentos:** estoque, configurações por marca/modelo/linha/cor, parâmetros de impressão, fotos e Log de movimentações.
+- **Máquinas:** aquisição, vida útil, manutenção, custo por hora, horas acumuladas e aviso a cada 350 horas desde a referência de manutenção.
+- **Estoque de produtos:** cartão por SKU com foto, total calculado e quantidades por cor em uma seção expansível. Os ajustes são manuais; salve cores e foto em Salvar estoque. Quantidades antigas ficam como Sem cor definida até serem distribuídas.
+- **Relatório diário e Painel do mês:** gráficos, custos, desperdício, horas por máquina, comparações e projeções.
+
+### Produção, estoque e horas
+
+Selecione o filamento existente no estoque, com marca e cor cadastradas, e informe os gramas previstos por item. O preço por kg usado no cadastro vem desse filamento.
+
+| Status | Estoque de filamentos | Horas da máquina |
+| --- | --- | --- |
+| Em produção | Não movimenta nem reserva saldo | Não soma |
+| Concluída | Desconta o consumo total; desperdício zero | Soma o tempo informado |
+| Parcial | Desconta o total, incluindo a parte descartada | Soma o tempo informado |
+| Falhou | Desconta o desperdício efetivo; por padrão, 100% do previsto | Soma o tempo efetivo; pode ser ajustado |
+
+Exemplo: 1 kg menos 300 g deixa 0,700 kg. Se a falha consumiu apenas 40 g, a baixa é de 0,040 kg e o saldo fica em 0,960 kg.
+
+Ajustar, reabrir ou excluir uma produção registra a diferença como baixa/estorno no Log. Repetir um salvamento não desconta novamente. Saldo insuficiente impede a gravação. Exclusões exigem a senha de confirmação e recalculam também as horas. Produções antigas sem vínculo com o estoque não geram baixas retroativas automaticamente; complete o vínculo ao editá-las.
+
+O desperdício é uma parte do total, não um consumo adicional. O estoque de produtos acabados permanece manual. As horas são atribuídas à data registrada na produção, sem divisão automática entre dias.
+
+### Cálculos
 
 ```text
-http://localhost:5177
+Custo da máquina por hora =
+  (valor de aquisição + manutenção estimada) / vida útil em horas
+  + custo de funcionamento por hora
+
+Custo do filamento = gramas consumidos / 1000 × preço do kg
+
+Custo unitário do produto =
+  (materiais + horas × depreciação/h + energia + outros custos do lote)
+  / quantidade do lote + outros custos por item
 ```
 
-## O que já está pronto
+Selecionar uma máquina na calculadora preenche o custo por hora; o campo também aceita valor manual. Esse valor é copiado no momento da seleção. O custo total da máquina já inclui funcionamento: confira o campo Energia para não contabilizar a mesma despesa duas vezes.
 
-- Leitura e escrita nas abas `Produtos`, `Encomendas`, `Produção`, `Filamentos`, `Máquinas` e `Peças de Reposição`.
-- Aba `Encomendas` em cards, com nome da encomenda, cliente, itens, entrega, status do processo, cancelamento, valor, quantidades, canal, contato e observações.
-- Encomendas salvas abrem em modo leitura pela seta; o formulário aparece só depois de clicar em `Fazer alterações`.
-- Produtos com seta para abrir a calculadora local de custo unitário.
-- Lista de produtos em quadrantes: nome/SKU, valor de venda, valor unitário, anúncio ativo, observações e botão da Shopee.
-- Observações locais por produto, abertas pelo quadrante de observações e salvas automaticamente.
-- Criação de variações de produto: escolha um produto original, copie os dados para uma nova linha e salve a variação.
-- Variações não aparecem como novos cards; elas ficam dentro da seta do produto original, em `Selecionar versão`.
-- Dentro de cada produto, a seta abre opções internas como `Calculadora` e `Anúncios Shopee`.
-- Cálculo local de custo por lote: material com múltiplos filamentos/cores, depreciação, energia e outros gastos.
-- Anúncios Shopee com kits padrão de 1, 2, 3 e 4 unidades, calculando custo, taxas estimadas, adicionais como brindes e lucro real.
-- Dados principais salvos em `sheets.local.json`.
-- Cálculos de produto salvos automaticamente no computador enquanto você digita, sem criar colunas extras.
-- Espelho local no navegador para não perder alterações se apertar F5 antes do arquivo terminar de salvar.
-- Inclusão, edição e exclusão de linhas direto pelo sistema local.
-- Servidor local sem dependências externas de npm.
+Custos e preços de produções salvas são históricos. O painel não calcula lucro real sem receitas; as projeções são estimativas baseadas no ritmo registrado, não garantias.
 
-## Cálculo do valor unitário
+## Preparação para hospedagem
 
-O custo é calculado por lote e depois dividido pela quantidade produzida:
+O sistema precisa de **Node.js executando o backend**. Enviar apenas `public/` a uma hospedagem estática ou PHP não é suficiente.
+
+A Hostinger possui [opções de hospedagem Node.js](https://www.hostinger.com/support/node-js-hosting-options-at-hostinger/) e um [guia para aplicações Node.js](https://www.hostinger.com/support/how-to-deploy-a-nodejs-website-in-hostinger/). Para esta versão, a opção documentada com controle do disco persistente é **VPS**. Em um plano gerenciado, confirme antes o suporte ao servidor Node personalizado, diretório gravável persistente entre implantações e uma única instância. Não use armazenamento temporário de build para os dados.
+
+Consulte [o guia de instalação na Hostinger](docs/HOSTINGER.md) para configuração, transferência dos registros, HTTPS e manutenção.
+
+### Variáveis de ambiente
+
+| Variável | Uso |
+| --- | --- |
+| `NODE_ENV` | `development` local; `production` na hospedagem |
+| `HOST` | Local: `127.0.0.1`; VPS com proxy: `127.0.0.1`; container/gerenciado: `0.0.0.0` |
+| `PORT` | Porta do processo; padrão `5177` |
+| `DATA_DIR` | Diretório de dados; **absoluto e obrigatório em produção**, fora de `public/` e da pasta substituída pelo deploy |
+| `APP_ORIGIN` | Origem HTTPS exata em produção, ex.: `https://sistema.exemplo.com`, sem barra final |
+| `AUTH_USERNAME` | Usuário proprietário do sistema |
+| `AUTH_PASSWORD_HASH` | Hash scrypt gerado pelo comando abaixo; não é a senha em texto |
+| `AUTO_LOGIN_BY_IP` | `true` permite entrada automática após 4 logins corretos do mesmo IP |
+| `TRUSTED_PROXY_IPS` | IPs dos proxies reversos controlados; vazio ao acessar diretamente o Node |
+| `PRODUCTION_DELETE_PASSWORD` | Senha independente para excluir produções; obrigatória em produção, mínimo 4 caracteres |
+| `BACKUP_DIR` | Destino opcional do comando de backup; padrão `DATA_DIR/backups` |
+
+Gere credenciais no computador ou servidor de confiança:
+
+```sh
+npm run credentials
+```
+
+O comando exibe uma senha aleatória de acesso, seu hash e uma senha de exclusão. Guarde as senhas em um gerenciador; configure apenas o hash em `AUTH_PASSWORD_HASH`. Não compartilhe essa saída. Você pode escolher o usuário e a senha de exclusão.
+
+Em produção, a inicialização falha quando faltam as configurações obrigatórias. O login protege páginas e APIs; a sessão dura 8 horas e usa cookie HttpOnly, SameSite e Secure. Reiniciar o servidor encerra sessões. Há limite de tentativas de login, validação de origem nas gravações, limite de corpo de 4 MB e bloqueio de incorporação em outros sites. A senha de exclusão é conferida no servidor, nunca embutida no JavaScript público.
+
+É uma aplicação privada para **um proprietário**, sem cadastro público, recuperação de senha por e-mail ou permissões por funcionário. Para trocar o acesso, gere novo hash, altere o ambiente e reinicie. No modo autenticado, os dados do servidor têm prioridade sobre o cache do navegador. Evite editar simultaneamente o mesmo registro em dois dispositivos: a última gravação prevalece.
+
+## Dados, atualização e backup
+
+A persistência continua em JSON, preservando a compatibilidade dos registros existentes:
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `sheets.local.json` | Cadastros, produção, máquinas, estoques e Log |
+| `product-costs.local.json` | Calculadora, anúncios, observações e configurações de produtos |
+| `access.local.json` | IPs, contagem de logins corretos, autorizações e histórico recente de acesso |
+
+O nome histórico `sheets` identifica a estrutura interna de dados; não representa conexão com um serviço externo. Os arquivos ficam em `DATA_DIR`; localmente, sem essa variável, permanecem na raiz do projeto. As fotos de filamentos são armazenadas junto dos dados. Arquivos de modelo permanecem no Google Drive e dependem das permissões do link.
+
+As gravações usam arquivo temporário, sincronização e troca atômica por arquivo. Uma fila serializa alterações e uma trava impede duas instâncias no mesmo diretório. Arquivos corrompidos geram erro em vez de serem substituídos silenciosamente por dados vazios. Esta versão usa **um servidor e um disco persistente**; não está configurada para múltiplas réplicas ou banco gerenciado.
+
+Com o servidor **parado** e `DATA_DIR` correto:
+
+```sh
+npm run backup
+npm run restore -- /caminho/flamez-DATA.json --confirm
+```
+
+O backup reúne os arquivos de cadastros, custos e acessos com checksum. Backups antigos sem acessos continuam aceitos e reiniciam as autorizações por IP. A restauração valida o backup e guarda cópia dos arquivos anteriores em `DATA_DIR/backups/antes-restauracao-*`. A trava recusa backup/restauração enquanto o sistema está em execução. O checksum detecta corrupção acidental; mantenha cópias em um destino confiável e separado da VPS. Esses comandos não criam agendamento automático.
+
+Antes de atualizar: finalize os salvamentos, pare o serviço, faça backup e atualize somente o código. Preserve `DATA_DIR`, ambiente e backups. Para transferir dados deste computador, aguarde os salvamentos da calculadora e copie os dois arquivos com o servidor parado. Nunca sobrescreva dados reais com arquivos vazios de uma instalação nova.
+
+## Verificações
+
+```sh
+npm run check
+npm test
+```
+
+Os testes usam diretórios temporários, sem alterar os registros reais. Cobrem consumo e estorno de filamento, horas, repetição de salvamentos, concorrência, proteção de login/API, origem, limites, dados privados, backup e restauração. O GitHub Actions executa as verificações em Node 22.
+
+`GET /healthz` é público e retorna apenas a disponibilidade do processo. Os logs operacionais saem no console e não devem conter credenciais ou registros completos.
+
+## Estrutura
 
 ```text
-valor unitário =
-  (soma dos materiais usados no lote
-  + (horas do lote * depreciação por hora)
-  + (potência W / 1000 * horas do lote * valor do kWh)
-  + outros gastos do lote)
-  / quantidade feita no lote
-  + outros gastos por item
-
-soma dos materiais =
-  soma de cada (valor do kg do filamento * gramas usadas / 1000)
+public/          Interface, estilos e cálculos compartilhados
+lib/             Configuração, autenticação, persistência e trava
+scripts/         Verificação, credenciais, backup e restauração
+tests/           Testes isolados
+server.js        Servidor HTTP e regras dos cadastros
+.env.example     Modelo de configuração, sem segredos
+Dockerfile       Imagem opcional para VPS com Docker
+compose.yaml     Serviço com volume persistente
+deploy/         Exemplos de systemd e Nginx
+docs/           Guia de instalação
 ```
 
-A depreciação começa com `R$ 0,80` por hora, mas pode ser alterada por produto.
+A integração antiga do Apps Script, seu arquivo de configuração e a logo antiga sem uso foram removidos. As funcionalidades do Drive, Shopee e os dados atuais foram preservados.
 
-## Lucro dos anúncios Shopee
+## Login e reconhecimento por IP
 
-Cada anúncio usa o custo unitário salvo na calculadora:
+O acesso único desta instalação foi configurado como `Flamez3D` em `.env`, com a senha armazenada somente como hash. As credenciais não são incluídas no GitHub: configure-as também ao transferir para hospedagem.
 
-```text
-custo do kit = valor unitário * unidades do kit
-adicionais = custos extras daquele anúncio, como brindes
-taxas estimadas = vendido por - recebo da Shopee
-lucro real = recebo da Shopee - custo do kit - adicionais
-```
+Usuário e senha de acesso aceitam letras maiúsculas ou minúsculas; os demais caracteres precisam corresponder. O botão de olho permite mostrar ou ocultar a senha digitada. Gere os hashes usando a versão atual de `npm run credentials`, que aplica essa mesma regra antes de calcular o hash. Hashes antigos, gerados com letras maiúsculas antes dessa alteração, precisam ser regenerados.
 
-As informações dos anúncios também ficam só no computador.
+Com `AUTO_LOGIN_BY_IP=true`, o quarto login com senha correta autoriza esse IP a entrar automaticamente nos próximos acessos. Falhas, atualização da página, reaproveitamento de sessão e entradas automáticas não aumentam a contagem. O botão **Acessos** mostra IP, quantidade de logins, último acesso e histórico, e permite revogar o reconhecimento. Revogar um IP encerra suas sessões; mudar as credenciais invalida as autorizações antigas. **Sair** abre a tela de senha sem entrar automaticamente de novo naquele momento.
 
-## Registros de produção
+O IP público pode ser compartilhado por vários computadores. Nesse caso, o reconhecimento libera a mesma rede, não um dispositivo específico. Um IP dinâmico pode ser atribuído a outra pessoa posteriormente. Para exigir senha, desative `AUTO_LOGIN_BY_IP` ou revogue os acessos.
 
-Em Produção, use Nova produção para registrar a data, um ou mais produtos,
-quantidades e desperdício adicional em gramas. O consumo por unidade vem dos
-materiais da calculadora do produto, dividido pela quantidade do lote.
-O custo considera os preços por kg de cada material e inclui o desperdício,
-avaliado pelo preço médio ponderado dos materiais desse produto.
+Atrás de Nginx, configure `TRUSTED_PROXY_IPS` com os IPs exatos do proxy controlado e mantenha o Node inacessível diretamente pela internet. O servidor aceita apenas o último endereço acrescentado a `X-Forwarded-For` por esse proxy. Cabeçalhos de encaminhamento sem proxy configurado não contam para liberar entrada automática. Em Docker, use o IP do proxy visto pelo container, não presuma que seja `127.0.0.1`.
 
-Os cards mostram data, filamento total, desperdício e custo de filamento.
-A seta abre os detalhes em leitura; Fazer alterações abre a edição.
-Cada item guarda os consumos e preços utilizados, preservando o histórico.
-Itens editados em produto ou quantidade são recalculados com a calculadora atual.
-Registros anteriores continuam disponíveis para consulta e edição.
-
-## Custo das máquinas
-
-A aba Máquinas permite informar nome, modelo, status, valor de aquisição,
-vida útil estimada em horas, manutenção total estimada durante essa vida útil
-e custo de funcionamento por hora (padrão: R$ 0,11/h, ou 11 centavos).
-
-O custo total por hora ligada é calculado automaticamente:
-
-```text
-custo por hora = (valor de aquisição + manutenção estimada) / vida útil em horas
-                + custo de funcionamento por hora
-```
-
-Informe vida útil maior que zero para obter o cálculo. Cadastros antigos continuam
-disponíveis; os campos antigos Local e Observações são preservados nos dados.
-
-## Arquivos de dados
-
-Os arquivos locais abaixo não são versionados no GitHub. Em uma instalação
-nova, o sistema inicia sem os registros da empresa e cria os arquivos de dados
-automaticamente. Para transferir os registros existentes entre computadores,
-copie `sheets.local.json` e `product-costs.local.json` separadamente, com o
-servidor parado. Mantenha cópias de segurança desses dois arquivos.
-
-- `sheets.local.json`: produtos, encomendas, produção, filamentos, máquinas e peças.
-- `product-costs.local.json`: calculadora, anúncios Shopee, observações locais e variações.
-- `config.local.json`: arquivo antigo de integração; não é mais necessário para o modo atual.
-
-## Horas de uso das máquinas
-
-Em Máquinas, informe diretamente as Horas de uso atuais. O sistema soma as horas
-vinculadas às produções finalizadas. Editar ou excluir uma produção recalcula o
-contador sem duplicar horas. A edição manual ajusta o total atual.
-
-## Status da produção
-
-- Em produção: horas pendentes, sem acrescentar ao contador da máquina.
-- Concluída: desperdício zero e horas totais somadas à máquina.
-- Parcial: informe os gramas descartados, limitados ao filamento total do item.
-- Falhou: todo o filamento vira desperdício. Informe, em cada item, as horas
-  realmente gastas até interromper; somente essas horas entram na máquina.
-
-O desperdício é uma parte do filamento total, não um consumo adicional.
-Os registros antigos sem status continuam contabilizados como concluídos para
-preservar o histórico. As regras também se aplicam às produções avulsas.
-
-## Painel do mês e manutenção
-
-O Painel do mês, abaixo de Peças, permite selecionar o mês e consultar produções,
-consumo, desperdício, custos e horas por máquina. Lotes em produção não entram
-nos totais de consumo/custo/horas; a contagem de peças usa lotes concluídos.
-
-Cada máquina tem data da última manutenção e barra de ciclo de 350 horas.
-Sem data cadastrada, o primeiro ciclo considera as horas totais de uso.
-Ao informar uma data passada, as horas registradas nos dias posteriores entram
-no ciclo. Para registrar uma revisão realizada agora, use Registrar manutenção
-hoje: a barra zera, mas as horas totais da máquina são preservadas.
-O aviso de manutenção necessária aparece ao atingir 350 horas no ciclo.
+`access.local.json` não é público e não é versionado. O histórico mantém os últimos 1.000 eventos (até 100 exibidos em Acessos); senhas e tokens não são gravados no histórico.

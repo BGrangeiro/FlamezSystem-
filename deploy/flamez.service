@@ -1,0 +1,23 @@
+[Unit]
+Description=Sistema Flamez
+After=network.target
+
+[Service]
+Type=simple
+User=flamez
+Group=flamez
+WorkingDirectory=/opt/flamez
+EnvironmentFile=/etc/flamez/flamez.env
+ExecStart=/usr/bin/node /opt/flamez/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/flamez
+
+[Install]
+WantedBy=multi-user.target

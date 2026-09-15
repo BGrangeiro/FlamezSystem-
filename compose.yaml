@@ -1,0 +1,19 @@
+services:
+  flamez:
+    build: .
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 5177
+      DATA_DIR: /var/lib/flamez
+    ports:
+      - "127.0.0.1:5177:5177"
+    volumes:
+      - flamez_data:/var/lib/flamez
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  flamez_data:

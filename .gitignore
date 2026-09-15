@@ -2,7 +2,13 @@ config.local.json
 product-costs.local.json
 node_modules/
 sheets.local.json
+access.local.json
 .env
 .env.*
 !.env.example
 *.log
+
+data/
+backups/
+.flamez.lock
+*.tmp

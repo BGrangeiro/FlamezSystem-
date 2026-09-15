@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SistemaFlamez</title>
+    <meta name="robots" content="noindex,nofollow" />
     <link rel="icon" type="image/svg+xml" sizes="any" href="/assets/flamez-favicon-white.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -30,18 +31,19 @@
           <button class="tab" data-sheet="painel" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 3v18h17M8 17v-5m5 5V7m5 10V4"/></svg><span>Painel do mês</span></button>
         </nav>
 
-        <button id="settingsButton" class="ghost-button hidden" type="button">Configurar integração</button>
       </aside>
 
       <main class="workspace">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Sistema local independente</p>
+            <p class="eyebrow">Gestão da produção</p>
             <h1 id="viewTitle">Produtos</h1>
           </div>
 
           <div class="actions">
-            <span id="syncStatus" class="status neutral">Dados locais</span>
+            <button id="accessButton" class="topbar-button" type="button" hidden>Acessos</button>
+            <button id="logoutButton" class="topbar-button" type="button" hidden>Sair</button>
+            <span id="syncStatus" class="status neutral">Dados salvos</span>
             <button id="variationButton" class="topbar-button hidden" type="button">Adicionar variação</button>
             <button id="refreshButton" class="icon-button" title="Atualizar dados" type="button">↻</button>
           </div>
@@ -73,7 +75,7 @@
     <template id="emptyStateTemplate">
       <div class="empty-state">
         <h2>Nenhum registro encontrado</h2>
-        <p>Adicione o primeiro item ou atualize os dados locais.</p>
+        <p>Adicione o primeiro item ou atualize os dados.</p>
       </div>
     </template>
 

@@ -1,12 +1,19 @@
 {
-  "name": "sistema-flamez-local",
+  "name": "sistema-flamez",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node scripts/check.js",
+    "build": "npm run check",
+    "test": "node --test",
+    "credentials": "node scripts/credentials.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/backup.js restore"
   },
   "engines": {
-    "node": ">=18"
-  }
+    "node": ">=22.16.0"
+  },
+  "description": "Gestão de produtos, produção, estoque e custos para impressão 3D"
 }

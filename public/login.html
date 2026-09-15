@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Entrar · SistemaFlamez</title>
+  <link rel="icon" href="/assets/flamez-favicon-white.svg">
+  <link rel="stylesheet" href="/login.css">
+</head>
+<body>
+  <main class="login-card">
+    <header class="login-brand">
+      <div class="login-brand-icon"><img src="/assets/flamez-logo-transparent.png" width="36" height="36" alt=""></div>
+      <h1 class="brand">FLAMEZ 3D</h1>
+    </header>
+    <form id="loginForm">
+      <label for="username">Usuário</label>
+      <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="120" autofocus>
+      <label for="password">Senha</label>
+      <div class="login-password">
+        <input id="password" name="password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required maxlength="256">
+        <button id="togglePassword" class="password-toggle" type="button" aria-label="Mostrar senha" aria-controls="password" aria-pressed="false" title="Mostrar senha">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/>
+            <circle cx="12" cy="12" r="3"/>
+            <path class="password-toggle-slash" d="m3 3 18 18"/>
+          </svg>
+        </button>
+      </div>
+      <p id="error" role="alert"></p>
+      <button type="submit">Entrar</button>
+    </form>
+  </main>
+  <script type="module" src="/login.js"></script>
+</body>
+</html>

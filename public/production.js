@@ -1,3 +1,5 @@
+import {createFilamentPicker} from './filament-picker.js';
+import { filamentName } from './filament-stock.js';
 import { showDailyReport } from './production-report.js';
 import { PRODUCTION_STATUSES, applyProductionOutcome, productionDraftItem } from './production-status.js';
 import { machineNumber, calculateMachineCost, normalizeMachineData } from './machine-costs.js';
@@ -183,7 +185,7 @@ export function renderProduction(ctx) {
           if(event.key === 'Escape') {closeMenu(); trigger.focus();}
           if(event.key === 'ArrowDown' && event.target === trigger) {event.preventDefault();choices.hidden = false;trigger.setAttribute('aria-expanded','true');choices.querySelector('button')?.focus();}
         });
-        dropdown.append(trigger,choices); statusArea.append(dropdown); body.append(statusArea);
+        dropdown.append(trigger,choices); statusArea.append(dropdown);
         if(savedStatus === 'Falhou') {
           const adjust = button('Ajustar',()=>openStatusEditor('Falhou',adjust,true),'production-adjust-hours');
           statusArea.append(adjust);
@@ -253,7 +255,7 @@ export function renderProduction(ctx) {
         if(item.machineRow != null) calculation.append(node('p','',`Máquina ${item.machineName || item.machineRow}: ${num(item.hours)} h${item.machineRate == null ? ' · custo por hora não informado' : ` × ${money(item.machineRate)}/h = ${money(machineCost)}`}`));
         calculation.append(node('p','',`${money(materialCost)} de filamento + ${money(machineCost)} de máquina = ${money(materialCost + machineCost)}`));
         calculation.append(node('p','',`Desperdício: ${num(item.waste)} g`));
-        detail.append(body,calculation);
+        detail.append(body,calculation,statusArea);
         grid.append(detail);
       });
       else Object.entries(row.data).filter(([,v])=>v).forEach(([label,value]) => grid.append(cell(label,value)));
@@ -283,7 +285,8 @@ export function renderProduction(ctx) {
       else {
         const product=state.productionProducts.find(p=>String(p.rowNumber)===entry.select.value);
         if (!product) throw new Error('Selecione um produto.');
-        item = productionItem(product, state.productCosts[productKey(product)], entry.quantity.value, '0');
+        const quantity=Number(entry.quantity.value);if(!Number.isInteger(quantity)||quantity<=0) throw new Error('Informe a quantidade de unidades.');
+        item = {productRow:product.rowNumber,name:product.data.Produto,sku:product.data.SKU||'',quantity};
       }
       const machineId = entry.machine.value;
       const hours = machineNumber(entry.hours.value || '0');
@@ -303,24 +306,32 @@ export function renderProduction(ctx) {
       const waste = field('Filamento descartado (g)','text',snapshot?.waste ?? '0'); waste.input.inputMode='decimal';
       const failure = field('Horas gastas até interromper (h)','text',snapshot?.failureHours ?? ''); failure.input.inputMode='decimal';
       entry.waste = waste.input; entry.wasteWrap = waste.wrap; entry.failure = failure.input; entry.failureWrap = failure.wrap;
-      const filament = field('Filamento usado (material / modelo)','text',snapshot?.filamentLabel || '');
-      filament.input.placeholder = 'Ex.: PETG · vazio usa os materiais do produto';
-      const color = field('Cor do filamento','text',snapshot?.filamentColor || '');
-      color.input.placeholder = 'Ex.: Branco'; entry.color = color.input;
+      const picker=createFilamentPicker(state.productionFilaments||[],snapshot?.filamentStockRow);
+      const stockLabel=picker.wrap;entry.stock=picker.input;
+      const grams=field('Filamento previsto neste item (g)','text',snapshot?.used ?? '');grams.input.required=true;grams.input.inputMode='decimal';entry.stockGrams=grams.input;
       const failureWaste = field('Filamento desperdiçado (g)','text',snapshot?.failureWaste ?? '');
       failureWaste.input.placeholder = 'Vazio: 100% do filamento previsto'; failureWaste.input.inputMode = 'decimal';
       entry.failureWaste = failureWaste.input; entry.failureWasteWrap = failureWaste.wrap;
-      entry.filament = filament.input;
-      entry.wrap.append(filament.wrap,color.wrap,waste.wrap,failure.wrap,failureWaste.wrap);
+      entry.wrap.append(stockLabel,grams.wrap,waste.wrap,failure.wrap,failureWaste.wrap);
     };
-    const readOutcomes = () => applyProductionOutcome(entries.map(entry=>({...readEntry(entry), filamentLabel: entry.filament.value.trim(), filamentColor: entry.color.value.trim(), waste: status.value === 'Parcial' ? entry.waste.value : 0, failureHours: entry.failure.value, failureWaste: entry.failureWaste.value.trim() || undefined})),status.value);
+    const readOutcomes = () => applyProductionOutcome(entries.map(entry=>{
+      const stock=(state.productionFilaments||[]).find(r=>String(r.rowNumber)===entry.stock.value);
+      if(!stock || !stock.data.Marca?.trim() || !stock.data.Cor?.trim()) throw new Error('Selecione um filamento do estoque com marca e cor preenchidas.');
+      const grams=machineNumber(entry.stockGrams.value),price=machineNumber(stock.data['Custo médio por kg']);
+      if(!Number.isFinite(grams)||grams<=0||!Number.isFinite(price)||price<0) throw new Error('Informe gramas maiores que zero e um custo por kg válido no estoque.');
+      const item=readEntry(entry),quantity=item.quantity||1;
+      return {...item,used:grams,plannedUsed:grams,total:grams/1000*price,plannedFilamentTotal:grams/1000*price,
+        filamentStockRow:stock.rowNumber,filamentBrand:stock.data.Marca,filamentLabel:filamentName(stock),filamentColor:stock.data.Cor,
+        gramsPerUnit:grams/quantity,materials:[{name:filamentName(stock),gramsPerUnit:grams/quantity,kgPrice:price}],
+        waste:status.value==='Parcial'?entry.waste.value:0,failureHours:entry.failure.value||entry.hours.value||'0',failureWaste:entry.failureWaste.value.trim()||undefined};
+    }),status.value);
     const refresh=()=>{
       entries.forEach(entry=>{
         entry.wasteWrap.hidden = status.value !== 'Parcial';
         entry.failureWrap.hidden = status.value !== 'Falhou';
         entry.failureWasteWrap.hidden = status.value !== 'Falhou';
         entry.waste.required = status.value === 'Parcial';
-        entry.failure.required = status.value === 'Falhou';
+        entry.failure.required = false;
         if (entry.hours) entry.hours.required = ['Concluída','Parcial'].includes(status.value) && Boolean(entry.machine?.value || entry.read);
       });
       try { const t=productionTotals(readOutcomes()); output.textContent=`Filamento total: ${num((t.used+t.waste)/1000,3)} kg · Desperdício: ${num(t.waste)} g · Filamento: ${money(t.total)} · Máquinas: ${money(t.machineCost)} · Total: ${money(t.total+t.machineCost)}${status.value === 'Em produção' ? ' · Horas ainda não somadas à máquina' : ''}`; } catch(e) {output.textContent=e.message;}
@@ -349,25 +360,22 @@ export function renderProduction(ctx) {
       const wrap = node('div','production-item production-manual');
       wrap.append(node('h4','','Produção avulsa / protótipo'));
       const name = field('Nome do que foi produzido','text',snapshot?.name || ''); name.input.required = true;
-      const grams = field('Filamento utilizado (g)','text',snapshot?.used ?? '');
-      const price = field('Preço do filamento (R$/kg)','text',snapshot?.materials?.[0]?.kgPrice ?? '');
       const hours = field('Tempo de uso da máquina (h)','text',snapshot?.hours ?? '');
-      [grams,price,hours].forEach(f => {f.input.inputMode='decimal';f.input.required=true;});
+      [hours].forEach(f => {f.input.inputMode='decimal';f.input.required=true;});
       const label=node('label','field'); label.append(node('span','','Máquina utilizada'));
       const select=node('select'); select.required=true; select.append(new Option('Selecione uma máquina',''));
       state.productionMachines.forEach(machine=>select.append(new Option(machine.data['Nome da máquina'] || 'Sem nome',String(machine.rowNumber))));
       if(snapshot && !state.productionMachines.some(m=>String(m.rowNumber)===String(snapshot.machineRow))) select.append(new Option(`${snapshot.machineName} (arquivada)`,String(snapshot.machineRow)));
       select.value=snapshot ? String(snapshot.machineRow) : ''; label.append(select);
-      const original = () => snapshot && name.input.value===snapshot.name && grams.input.value===String(snapshot.used) && price.input.value===String(snapshot.materials[0].kgPrice) && hours.input.value===String(snapshot.hours) && select.value===String(snapshot.machineRow);
-      const entry={wrap,hours:hours.input,read:()=> original() ? snapshot : manualProductionItem({name:name.input.value,grams:grams.input.value,price:price.input.value,hours:hours.input.value || '0'},state.productionMachines.find(m=>String(m.rowNumber)===select.value))};
+      const entry={wrap,hours:hours.input,read:()=> manualProductionItem({name:name.input.value,grams:entry.stockGrams.value,price:(state.productionFilaments||[]).find(r=>String(r.rowNumber)===entry.stock.value)?.data['Custo médio por kg'],hours:hours.input.value || '0'},state.productionMachines.find(m=>String(m.rowNumber)===select.value))};
       outcomeFields(entry,snapshot); entries.push(entry);
-      wrap.append(name.wrap,grams.wrap,price.wrap,label,hours.wrap,button('Remover',()=>{if(!draft && snapshot) {removeProductionItem(row.rowNumber,items.indexOf(snapshot));return;}entries.splice(entries.indexOf(entry),1);wrap.remove();refresh();},'danger-button'));
+      wrap.append(name.wrap,label,hours.wrap,button('Remover',()=>{if(!draft && snapshot) {removeProductionItem(row.rowNumber,items.indexOf(snapshot));return;}entries.splice(entries.indexOf(entry),1);wrap.remove();refresh();},'danger-button'));
       wrap.addEventListener('input',refresh); list.append(wrap); refresh();
     };
     (items?.length ? items : [null]).forEach(item => item?.type === 'manual' ? addManual(item) : addItem(item));
     form.append(button('Adicionar produção avulsa',()=>addManual(null),'ghost-light-button production-add-product'));
 
-    form.append(button('Adicionar produto',()=>addItem(null),'ghost-light-button production-add-product'),notes.wrap,output,node('p','machine-formula','O consumo vem da calculadora: gramas do lote ÷ unidades do lote × quantidade produzida. Concluída: desperdício zero. Parcial: informe a parte do filamento descartada. Falhou: informe as horas e o filamento realmente gastos; sem ajuste, o desperdício é 100% do previsto. Em produção: as horas ficam pendentes. O tempo da máquina é o total deste item, não por unidade. Se vários produtos compartilharam uma impressão, distribua o tempo entre eles para não duplicar horas.'));
+    form.append(button('Adicionar produto',()=>addItem(null),'ghost-light-button production-add-product'),notes.wrap,output,node('p','machine-formula','Selecione o filamento com marca e cor e informe os gramas utilizados. A baixa no estoque acontece ao finalizar; ajustes e exclusões registram a diferença no Log. Concluída: desperdício zero. Parcial: informe a parte do filamento descartada. Falhou: informe as horas e o filamento realmente gastos; sem ajuste, o desperdício é 100% do previsto. Em produção: as horas ficam pendentes. O tempo da máquina é o total deste item, não por unidade. Se vários produtos compartilharam uma impressão, distribua o tempo entre eles para não duplicar horas.'));
     const actions=node('div','row-actions');
     actions.append(button(draft?'Cancelar':'Cancelar edição',()=>{if(draft) state.draft=null;state.editingProduction.delete(key);render();},'ghost-light-button'));
     if(!draft) actions.append(button('Remover produção',()=>deleteRow('producao',row.rowNumber),'danger-button'));

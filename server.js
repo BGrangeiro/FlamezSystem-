@@ -1,5 +1,12 @@
+import { normalizeProductStock } from './public/product-stock-data.js';
+import { loadConfig } from './lib/config.js';
+import { readJson, writeJson } from './lib/storage.js';
+import { createAuth, sameSecret } from './lib/auth.js';
+import { acquireLock } from './lib/lock.js';
+import { loadEnvFile } from 'node:process';
+import { reconcileFilamentStock, validateStockItems } from './public/filament-stock.js';
 import { createServer } from "node:http";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,9 +15,12 @@ import { applyProductionOutcome } from "./public/production-status.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
-const localSheetsPath = path.join(__dirname, "sheets.local.json");
-const productCostsPath = path.join(__dirname, "product-costs.local.json");
-const port = Number(process.env.PORT || 5177);
+if (existsSync(path.join(__dirname, '.env'))) loadEnvFile(path.join(__dirname, '.env'));
+const config=loadConfig();
+const auth=createAuth(config);
+const localSheetsPath = path.join(config.dataDir, 'sheets.local.json');
+const productCostsPath = path.join(config.dataDir, 'product-costs.local.json');
+const port = config.port;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -22,7 +32,8 @@ const mimeTypes = {
 };
 
 const DEFAULT_LOCAL_SHEETS = {
-  productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade'],rows:[]},
+  filamentLog: {sheet:'filamentLog',sheetName:'Log de filamentos',headers:['Data','Dia da produção','Produção','Filamento','Movimento','Quantidade (g)','Saldo (kg)','Status'],rows:[]},
+  productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade','Cores','Foto'],rows:[]},
   filamentSettings: {
     sheet: "filamentSettings",
     sheetName: "Configurações de filamento",
@@ -122,6 +133,7 @@ const DEFAULT_LOCAL_SHEETS = {
 };
 
 function migrateLocalSheet(key, sheet) {
+  if(key === 'productStock') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.productStock.headers};
   if(key === 'filamentSettings') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.filamentSettings.headers};
   if (key === "maquinas") {
     return { ...sheet, headers: MACHINE_HEADERS, rows: sheet.rows.map((row) => ({
@@ -149,15 +161,9 @@ function migrateLocalSheet(key, sheet) {
 }
 
 async function readLocalSheets() {
-  let data = null;
-
-  if (existsSync(localSheetsPath)) {
-    try {
-      data = JSON.parse(await readFile(localSheetsPath, "utf8"));
-    } catch {
-      data = null;
-    }
-  }
+  const data=await readJson(localSheetsPath, {sheets:{}});
+  if(!data.sheets || typeof data.sheets!=='object' || Array.isArray(data.sheets)) throw new Error('Estrutura de dados inválida. Restaure um backup.');
+  for(const sheet of Object.values(data.sheets)) if(!sheet || !Array.isArray(sheet.rows) || sheet.rows.some(row=>!row || !row.data || typeof row.data!=='object' || Array.isArray(row.data))) throw new Error('Registros inválidos no arquivo de dados. Restaure um backup.');
 
   const sheets = {};
   Object.entries(DEFAULT_LOCAL_SHEETS).forEach(([key, defaults]) => {
@@ -182,13 +188,15 @@ async function readLocalSheets() {
 }
 
 async function writeLocalSheets(data) {
+  const previous = await readLocalSheets();
+  reconcileFilamentStock(previous.sheets, data.sheets);
   updateMachineHours(data.sheets);
   const next = {
     ...data,
     mode: "local",
     updatedAt: new Date().toISOString()
   };
-  await writeFile(localSheetsPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  await writeJson(localSheetsPath,next);
   return next;
 }
 
@@ -227,14 +235,20 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     throw error;
   }
 
+  if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
+  if(sheetKey === 'filamentos') {
+    const amount=machineNumber(rowData['Estoque atual (kg)']), price=machineNumber(rowData['Custo médio por kg']);
+    if(!Number.isFinite(amount)||amount<0||!Number.isFinite(price)||price<0) throw Object.assign(new Error('Informe estoque e custo por kg válidos, maiores ou iguais a zero.'),{statusCode:400});
+  }
   const targetRowNumber = Number(rowNumber || 0) || nextRowNumber(sheet.rows);
   if(sheetKey === 'productStock') {
     const sku = String(rowData.SKU || '').trim();
-    const quantity = machineNumber(rowData.Quantidade);
+    rowData = normalizeProductStock(rowData,sheet.rows.find(row=>row.rowNumber===targetRowNumber)?.data);
+    const quantity = Number(rowData.Quantidade);
     if(!sku || !Number.isSafeInteger(quantity) || quantity < 0) throw Object.assign(new Error('Informe um SKU e uma quantidade inteira maior ou igual a zero.'),{statusCode:400});
     if(!data.sheets.produtos.rows.some(row=>String(row.data.SKU || '').trim() === sku)) throw Object.assign(new Error('Este SKU não está cadastrado em Produtos.'),{statusCode:400});
     if(sheet.rows.some(row=>row.rowNumber !== targetRowNumber && row.data.SKU === sku)) throw Object.assign(new Error('Este SKU já possui estoque. Atualize a página para editar a quantidade existente.'),{statusCode:400});
-    rowData={SKU:sku,Quantidade:String(quantity)};
+    rowData={...rowData,SKU:sku,Quantidade:String(quantity)};
   }
   if (sheetKey === 'filamentSettings') {
     const invalid = message => Object.assign(new Error(message), {statusCode:400});
@@ -285,6 +299,7 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
   if (sheetKey === "producao" && rowData["Itens da produção"]) {
     let items = JSON.parse(rowData["Itens da produção"]);
     if (!Array.isArray(items)) throw Object.assign(new Error("Itens da produção inválidos."), { statusCode: 400 });
+    validateStockItems(items, data.sheets.filamentos.rows);
     if (rowData["Status da produção"]) {
       try { items = applyProductionOutcome(items, rowData["Status da produção"]); }
       catch (error) { error.statusCode = 400; throw error; }
@@ -331,7 +346,7 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
 }
 
 function requireProductionPassword(password) {
-  if(password !== '1234') throw Object.assign(new Error('Senha incorreta. A produção não foi removida.'),{statusCode:403});
+  if(!sameSecret(password,config.deletionPassword)) throw Object.assign(new Error('Senha incorreta. A produção não foi removida.'),{statusCode:403});
 }
 
 async function removeProductionItem(rowNumber,itemIndex,password) {
@@ -363,6 +378,8 @@ async function deleteLocalRow(sheetKey, rowNumber, password) {
     throw error;
   }
 
+  if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
+  if(sheetKey === 'filamentos' && data.sheets.producao.rows.some(r=>JSON.parse(r.data['Itens da produção']||'[]').some(i=>String(i.filamentStockRow)===String(rowNumber)))) throw Object.assign(new Error('Este filamento está vinculado a uma produção e não pode ser excluído.'),{statusCode:400});
   const targetRowNumber = Number(rowNumber);
   const initialLength = sheet.rows.length;
   sheet.rows = sheet.rows.filter((row) => Number(row.rowNumber) !== targetRowNumber);
@@ -406,21 +423,10 @@ async function renameProduct(rowNumber, name) {
   return { ok: true, row };
 }
 
-async function readProductCosts() {
-  if (!existsSync(productCostsPath)) {
-    return {};
-  }
-
-  try {
-    const raw = await readFile(productCostsPath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
+async function readProductCosts() { return readJson(productCostsPath,{}); }
 
 async function saveProductCost(productKey, data) {
-  if (!productKey) {
+  if (!productKey || ["__proto__","constructor","prototype"].includes(productKey)) {
     throw new Error("Produto sem chave para salvar o cálculo local.");
   }
 
@@ -429,19 +435,26 @@ async function saveProductCost(productKey, data) {
     ...data,
     updatedAt: new Date().toISOString()
   };
-  await writeFile(productCostsPath, `${JSON.stringify(costs, null, 2)}\n`, "utf8");
+  await writeJson(productCostsPath,costs);
   return costs[productKey];
 }
 
 async function readBody(request) {
   const chunks = [];
+  let size=0;
 
   for await (const chunk of request) {
+    size+=chunk.length;
+    if(size>4*1024*1024) throw Object.assign(new Error('Solicitação muito grande. Limite: 4 MB.'),{statusCode:413});
     chunks.push(chunk);
   }
 
   const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
+  try {
+    const data=raw?JSON.parse(raw,(key,value)=>{if(['__proto__','constructor','prototype'].includes(key))throw new Error('Campo inválido.');return value;}):{};
+    if(!data || typeof data!=='object'||Array.isArray(data))throw new Error('Objeto esperado.');
+    return data;
+  } catch {throw Object.assign(new Error('JSON inválido.'),{statusCode:400});}
 }
 
 function sendJson(response, statusCode, payload) {
@@ -457,7 +470,7 @@ async function serveStatic(requestUrl, response) {
   const safePath = path.normalize(pathname === "/" ? "/index.html" : pathname).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(publicDir, safePath);
 
-  if (!filePath.startsWith(publicDir)) {
+  if (!filePath.startsWith(publicDir + path.sep)) {
     sendJson(response, 403, { ok: false, message: "Arquivo bloqueado." });
     return;
   }
@@ -476,28 +489,27 @@ async function serveStatic(requestUrl, response) {
   }
 }
 
+let mutationQueue = Promise.resolve();
+function mutate(task) { const result=mutationQueue.then(task);mutationQueue=result.catch(()=>{});return result; }
 async function handleApi(request, response, url) {
   try {
+    auth.checkMutation(request);
+    if(url.pathname==='/api/auth/login' && request.method==='POST') {await auth.login(request,response,await readBody(request));sendJson(response,200,{ok:true});return;}
+    if(url.pathname==='/api/auth/automatic' && request.method==='POST') {sendJson(response,200,{ok:true,authenticated:await auth.automaticLogin(request,response)});return;}
+    if(!auth.authenticated(request)) {sendJson(response,401,{ok:false,message:'Entre para acessar o sistema.'});return;}
+    if(url.pathname==='/api/auth/accesses' && request.method==='GET') {sendJson(response,200,{ok:true,...await auth.accesses()});return;}
+    if(url.pathname==='/api/auth/revoke-ip' && request.method==='POST') {const body=await readBody(request);await auth.revoke(body.ip);sendJson(response,200,{ok:true});return;}
+    if(url.pathname==='/api/auth/session' && request.method==='GET') {sendJson(response,200,{ok:true,enabled:auth.enabled,username:config.username});return;}
+    if(url.pathname==='/api/auth/logout' && request.method==='POST') {auth.logout(request,response);sendJson(response,200,{ok:true});return;}
     if(url.pathname === '/api/production/remove-item' && request.method === 'POST') {
       const body=await readBody(request);
-      sendJson(response,200,await removeProductionItem(body.rowNumber,body.itemIndex,body.password));return;
+      sendJson(response,200,await mutate(()=>removeProductionItem(body.rowNumber,body.itemIndex,body.password)));return;
     }
     if (url.pathname === "/api/products/rename" && request.method === "POST") {
       const body = await readBody(request);
-      sendJson(response, 200, await renameProduct(body.rowNumber, body.name));
+      sendJson(response, 200, await mutate(()=>renameProduct(body.rowNumber, body.name)));
       return;
     }
-    if (url.pathname === "/api/config" && request.method === "GET") {
-      sendJson(response, 200, { ok: true, config: { mode: "local" } });
-      return;
-    }
-
-    if (url.pathname === "/api/config" && request.method === "POST") {
-      await readBody(request);
-      sendJson(response, 200, { ok: true, config: { mode: "local" } });
-      return;
-    }
-
     if (url.pathname === "/api/sheets" && request.method === "GET") {
       const sheet = url.searchParams.get("sheet") || "produtos";
       sendJson(response, 200, await listLocalSheet(sheet));
@@ -511,13 +523,13 @@ async function handleApi(request, response, url) {
 
     if (url.pathname === "/api/sheets/upsert" && request.method === "POST") {
       const body = await readBody(request);
-      sendJson(response, 200, await upsertLocalRow(String(body.sheet || ""), body.rowNumber, body.data || {}));
+      sendJson(response, 200, await mutate(()=>upsertLocalRow(String(body.sheet || ""), body.rowNumber, body.data || {})));
       return;
     }
 
     if (url.pathname === "/api/sheets/delete" && request.method === "POST") {
       const body = await readBody(request);
-      sendJson(response, 200, await deleteLocalRow(String(body.sheet || ""), body.rowNumber, body.password));
+      sendJson(response, 200, await mutate(()=>deleteLocalRow(String(body.sheet || ""), body.rowNumber, body.password)));
       return;
     }
 
@@ -528,32 +540,61 @@ async function handleApi(request, response, url) {
 
     if (url.pathname === "/api/product-costs" && request.method === "POST") {
       const body = await readBody(request);
-      const cost = await saveProductCost(String(body.productKey || ""), body.data || {});
+      const cost = await mutate(()=>saveProductCost(String(body.productKey || ""), body.data || {}));
       sendJson(response, 200, { ok: true, productKey: body.productKey, cost });
       return;
     }
 
     sendJson(response, 404, { ok: false, message: "Rota de API não encontrada." });
   } catch (error) {
+    if(!error.statusCode) console.error("Falha na API:",error.message);
     sendJson(response, error.statusCode || 500, {
       ok: false,
-      message: error.message || "Erro inesperado.",
-      details: error.payload || null
+      message: error.statusCode ? error.message : "Não foi possível salvar ou carregar os dados. Verifique o servidor e o backup."
     });
   }
 }
 
 const server = createServer(async (request, response) => {
-  const url = new URL(request.url, `http://localhost:${port}`);
-
-  if (url.pathname.startsWith("/api/")) {
-    await handleApi(request, response, url);
-    return;
-  }
-
-  await serveStatic(request.url, response);
+  response.setHeader('X-Content-Type-Options','nosniff');
+  response.setHeader('X-Frame-Options','DENY');
+  response.setHeader('Referrer-Policy','no-referrer');
+  response.setHeader('X-Robots-Tag','noindex, nofollow');
+  response.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
+  response.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  if(config.production) response.setHeader('Strict-Transport-Security','max-age=31536000');
+  try {
+    const url = new URL(request.url, 'http://localhost');
+    if(url.pathname==='/healthz' && request.method==='GET') {sendJson(response,200,{ok:true});return;}
+    if(url.pathname.startsWith('/api/')) {await handleApi(request,response,url);return;}
+    if(!['GET','HEAD'].includes(request.method)) {sendJson(response,405,{ok:false,message:'Método não permitido.'});return;}
+    if(url.pathname==='/login') {await serveStatic('/login.html',response);return;}
+    const loginAsset=['/login.js','/login.css','/assets/flamez-favicon-white.svg','/assets/flamez-logo-transparent.png'].includes(url.pathname);
+    if(!loginAsset && !auth.authenticated(request)) {response.writeHead(302,{location:'/login','cache-control':'no-store'});response.end();return;}
+    await serveStatic(request.url,response);
+  } catch(error) {console.error('Falha na solicitação:',error.message);if(!response.headersSent)sendJson(response,400,{ok:false,message:'Solicitação inválida.'});else response.end();}
 });
-
-server.listen(port, () => {
-  console.log(`Sistema Flamez rodando em http://localhost:${port}`);
-});
+server.requestTimeout=30_000;
+server.headersTimeout=15_000;
+server.keepAliveTimeout=5_000;
+let releaseLock;
+try {
+  releaseLock=await acquireLock(config.dataDir);
+  await readLocalSheets();
+  await readProductCosts();
+  if(auth.enabled)await auth.init();
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,config.host,resolve);});
+  console.log('Sistema Flamez iniciado na porta '+port+'. Autenticação: '+(auth.enabled?'ativa':'modo local'));
+} catch(error) {await releaseLock?.();console.error('Não foi possível iniciar:',error.message);process.exitCode=1;}
+let stopping=false;
+async function shutdown() {
+  if(stopping)return;stopping=true;
+  const timeout=setTimeout(()=>process.exit(1),30_000);timeout.unref();
+  await new Promise(resolve=>server.close(resolve));
+  await mutationQueue;
+  await auth.flush();
+  await releaseLock?.();
+  clearTimeout(timeout);
+}
+process.on('SIGTERM',shutdown);
+process.on('SIGINT',shutdown);
