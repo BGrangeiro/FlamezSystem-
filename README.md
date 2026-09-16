@@ -21,6 +21,8 @@ Para configurar, copie `.env.example` para `.env`. O servidor carrega esse arqui
 
 ## Funcionalidades
 
+- **Custos da empresa:** gastos em cartões com descrição, valor, data, categoria e observações individuais. Use Novo gasto e Salvar gasto; a busca filtra os cartões e seu total. Os registros fazem parte dos backups em `sheets.local.json`.
+
 ### Monitoramento Bambu Cloud (experimental)
 
 Na aba **Máquinas**, use **Conectar Bambu**. Informe o e-mail da conta Bambu e, depois, o código enviado pela Bambu. Esta implementação inicial atende contas globais (fora da China) com acesso por código de e-mail. A autenticação pode ser recusada pela Bambu; erros são exibidos sem contornar suas proteções. A compatibilidade real com sua conta e firmware precisa ser validada.
@@ -37,7 +39,7 @@ A lista da conta Bambu é consultada a cada minuto. Novas impressoras são salva
 
 ### Automação de máquinas e produções
 
-O servidor mantém em `sheets.local.json` um registro persistente de cada impressão acompanhada. Ao receber FINISH ou FAILED, soma o tempo RUNNING observado ao total de uso e ao ciclo de manutenção de 350 horas. Pausas e intervalos sem telemetria não são estimados. Impressões que começaram antes do acompanhamento têm somente as horas observadas registradas. Repetição do relatório e reinício não duplicam horas. Apagar uma produção manual estorna suas horas como antes; apagar uma produção vinculada não apaga o uso físico já registrado pela Bambu.
+O servidor mantém em `sheets.local.json` um registro persistente de cada impressão acompanhada. Ao receber FINISH ou FAILED, soma o tempo RUNNING observado ao total de uso e ao ciclo de manutenção de 400 horas. Pausas e intervalos sem telemetria não são estimados. Impressões que começaram antes do acompanhamento têm somente as horas observadas registradas. Repetição do relatório e reinício não duplicam horas. Apagar uma produção manual estorna suas horas como antes; apagar uma produção vinculada não apaga o uso físico já registrado pela Bambu.
 
 Ao salvar uma nova produção **Em produção** com uma máquina integrada, ela é vinculada à impressão atual (se recente) ou à próxima impressão iniciada. Apenas uma produção em andamento por máquina pode ser vinculada. Um relatório antigo de conclusão não finaliza um cadastro novo. O estado FINISH confirma o término; percentual 100 isolado não é suficiente. Quando todas as impressões vinculadas terminam com sucesso, o sistema conclui a produção, usa as horas acompanhadas para os custos e executa a baixa de filamento existente, sem duplicação. Vários SKUs no mesmo trabalho repartem suas horas proporcionalmente às horas previstas. Estoque insuficiente bloqueia a baixa e exibe uma pendência na produção; as horas físicas continuam preservadas.
 
@@ -55,7 +57,7 @@ O arquivo `DATA_DIR/bambu-usage.local.json` guarda os totais por dia, não crede
 - **Encomendas:** pedidos e acompanhamento das etapas, em cartões expansíveis.
 - **Produção:** agrupamento por dia, produtos e produções avulsas, máquina, material, marca, cor, consumo, status e custos históricos.
 - **Filamentos:** estoque, configurações por marca/modelo/linha/cor, parâmetros de impressão, fotos e Log de movimentações.
-- **Máquinas:** aquisição, vida útil, manutenção, custo por hora, horas acumuladas e aviso a cada 350 horas desde a referência de manutenção.
+- **Máquinas:** aquisição, vida útil, manutenção, custo por hora, horas acumuladas e aviso a cada 400 horas desde a referência de manutenção.
 - **Estoque de produtos:** cartão por SKU com foto, total calculado e quantidades por cor em uma seção expansível. Os ajustes são manuais; salve cores e foto em Salvar estoque. Quantidades antigas ficam como Sem cor definida até serem distribuídas.
 - **Relatório diário e Painel do mês:** gráficos, custos, desperdício, horas por máquina, comparações e projeções.
 

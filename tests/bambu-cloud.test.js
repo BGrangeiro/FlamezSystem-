@@ -3,6 +3,25 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createBambuCloud, mergeReport } from '../lib/bambu-cloud.js';
 
+test('dependência MQTT ausente retorna diagnóstico de instalação sem expor a sessão', async () => {
+  const token = `header.${Buffer.from(JSON.stringify({ username: 'u_123' })).toString('base64url')}.secret`;
+  const cloud = createBambuCloud({
+    request: async url => ({ ok: true, status: 200, text: async () => JSON.stringify(
+      url.endsWith('/login') ? { accessToken: token } : url.endsWith('/bind') ? { devices: [] } : {}
+    ) }),
+    loadMqtt: async () => { throw Object.assign(new Error('private server path'), { code: 'ERR_MODULE_NOT_FOUND' }); }
+  });
+  await cloud.requestCode('test@example.com');
+  await assert.rejects(cloud.verify('123456'), error => {
+    assert.equal(error.statusCode, 503);
+    assert.match(error.message, /npm ci/);
+    assert.ok(!error.message.includes(token));
+    assert.ok(!error.message.includes('private server path'));
+    return true;
+  });
+  assert.equal(cloud.status().authenticated, false);
+});
+
 test('telemetria parcial preserva dados e troca de trabalho remove valores anteriores', () => {
   const first = mergeReport({ id: 'A1' }, { print: { subtask_id: '1', mc_percent: 42, mc_remaining_time: 93, gcode_state: 'RUNNING' } }, 100);
   assert.equal(first.progress, 42);

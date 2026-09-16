@@ -1,4 +1,6 @@
 import { normalizeProductStock } from './public/product-stock-data.js';
+import { addDelivery, deliveryTotals } from './public/order-deliveries.js';
+import { EXPENSE_HEADERS, normalizeExpense } from './lib/company-expenses.js';
 import { createBambuCloud } from './lib/bambu-cloud.js';
 import { createBambuSessionStore } from './lib/bambu-session.js';
 import { createBambuUsage } from './lib/bambu-usage.js';
@@ -61,6 +63,7 @@ const mimeTypes = {
 };
 
 const DEFAULT_LOCAL_SHEETS = {
+  companyExpenses: {sheet: 'companyExpenses', sheetName: 'Custos da empresa', headers: EXPENSE_HEADERS, rows: []},
   filamentLog: {sheet:'filamentLog',sheetName:'Log de filamentos',headers:['Data','Dia da produção','Produção','Filamento','Movimento','Quantidade (g)','Saldo (kg)','Status'],rows:[]},
   productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade','Cores','Foto'],rows:[]},
   filamentSettings: {
@@ -162,6 +165,7 @@ const DEFAULT_LOCAL_SHEETS = {
 };
 
 function migrateLocalSheet(key, sheet) {
+  if(key === 'companyExpenses') return {...sheet, headers: EXPENSE_HEADERS};
   if(key === 'productStock') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.productStock.headers};
   if(key === 'filamentSettings') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.filamentSettings.headers};
   if (key === "maquinas") {
@@ -265,6 +269,7 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
   }
 
   if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
+  if(sheetKey === 'companyExpenses') rowData = normalizeExpense(rowData, sheet.rows.find(row => Number(row.rowNumber) === Number(rowNumber))?.data);
   if(sheetKey === 'filamentos') {
     const amount=machineNumber(rowData['Estoque atual (kg)']), price=machineNumber(rowData['Custo médio por kg']);
     if(!Number.isFinite(amount)||amount<0||!Number.isFinite(price)||price<0) throw Object.assign(new Error('Informe estoque e custo por kg válidos, maiores ou iguais a zero.'),{statusCode:400});
@@ -279,6 +284,12 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     rowData={Imagem:String(rowData.Imagem||''),'Nome da peça':name,Preço:String(rowData.Preço),Estoque:String(stock)};
   }
   const targetRowNumber = Number(rowNumber || 0) || nextRowNumber(sheet.rows);
+  if (sheetKey === 'encomendas') {
+    const previous = sheet.rows.find(row => Number(row.rowNumber) === targetRowNumber)?.data;
+    rowData = {...rowData, _deliveries: previous?._deliveries || '[]'};
+    const {delivered, total} = deliveryTotals(rowData);
+    if (total !== null && total < delivered) throw Object.assign(new Error('A quantidade total não pode ser menor que a quantidade já entregue.'), {statusCode: 400});
+  }
   if(sheetKey === 'productStock') {
     const sku = String(rowData.SKU || '').trim();
     rowData = normalizeProductStock(rowData,sheet.rows.find(row=>row.rowNumber===targetRowNumber)?.data);
@@ -476,6 +487,15 @@ async function renameProduct(rowNumber, name) {
 
 async function readProductCosts() { return readJson(productCostsPath,{}); }
 
+async function recordOrderDelivery(body) {
+  const data = await readLocalSheets();
+  const row = data.sheets.encomendas.rows.find(row => row.rowNumber === Number(body.rowNumber));
+  if (!row) throw Object.assign(new Error('Encomenda não encontrada.'), {statusCode: 404});
+  row.data = addDelivery(row.data, body);
+  await writeLocalSheets(data);
+  return {ok: true, row};
+}
+
 async function saveProductCost(productKey, data) {
   if (!productKey || ["__proto__","constructor","prototype"].includes(productKey)) {
     throw new Error("Produto sem chave para salvar o cálculo local.");
@@ -555,6 +575,10 @@ async function handleApi(request, response, url) {
     if(url.pathname==='/api/auth/login' && request.method==='POST') {await auth.login(request,response,await readBody(request));sendJson(response,200,{ok:true});return;}
     if(url.pathname==='/api/auth/automatic' && request.method==='POST') {sendJson(response,200,{ok:true,authenticated:await auth.automaticLogin(request,response)});return;}
     if(!auth.authenticated(request)) {sendJson(response,401,{ok:false,message:'Entre para acessar o sistema.'});return;}
+    if(url.pathname === '/api/orders/deliveries' && request.method === 'POST') {
+      const body = await readBody(request);
+      sendJson(response, 200, await mutate(() => recordOrderDelivery(body))); return;
+    }
     if(url.pathname==='/api/system/status' && request.method==='GET') {sendJson(response,200,{ok:true,backups:backups.status()});return;}
     if(url.pathname==='/api/bambu/status' && request.method==='GET') {sendJson(response,200,{ok:true,...bambuCloud.status()});return;}
     if(url.pathname==='/api/bambu/usage' && request.method==='GET') {sendJson(response,200,{ok:true,...bambuUsage.history()});return;}

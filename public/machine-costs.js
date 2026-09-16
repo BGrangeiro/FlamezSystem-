@@ -16,7 +16,7 @@ export function maintenanceProgress(data) {
   const current = Number(data['Horas totais (h)']) || 0;
   const baseline = Number(data._maintenanceHours) || 0;
   const hours = Math.max(0, current - baseline);
-  return {hours, percent: Math.min(100, hours / 350 * 100), remaining: Math.max(0,350-hours), due: hours >= 350};
+  return {hours, percent: Math.min(100, hours / 400 * 100), remaining: Math.max(0,400-hours), due: hours >= 400};
 }
 
 export function calculateMachineCost(data) {

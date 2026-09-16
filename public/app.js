@@ -1,4 +1,6 @@
 import { renderProductStock } from './product-stock.js';
+import { deliveryTotals, renderDeliveryHistory, openDeliveryDialog } from './order-deliveries.js';
+import { renderCompanyExpenses } from './company-expenses.js';
 import { renderBambuMonitor, stopBambuMonitor } from './bambu-monitor.js';
 import { renderBambuUsageLog, stopBambuUsageLog } from './bambu-usage.js';
 import { renderMonthlyPanel } from './monthly-panel.js';
@@ -7,6 +9,7 @@ import { MACHINE_HEADERS, calculateMachineCost, normalizeMachineData, machineNum
 import { renderProduction } from "./production.js";
 
 const SHEETS = {
+  companyExpenses: {title: 'Custos da empresa'},
   productStock: {title:'Estoque de produtos'},
   painel: {title: "Painel do mês"},
   produtos: {
@@ -2133,6 +2136,16 @@ function renderOrderCard(row, isDraft = false) {
     card.append(isDraft || editing ? renderOrderForm(row, isDraft) : renderOrderDetailsPanel(row));
   }
 
+  if (!isDraft) {
+    const deliveries = document.createElement('div'); deliveries.className = 'order-delivery-summary';
+    const {delivered, remaining} = deliveryTotals(row.data);
+    const text = document.createElement('span'); text.textContent = `${delivered} itens entregues${remaining === null ? '' : ` · faltam ${remaining}`}`;
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'small-button'; add.textContent = 'Adicionar entrega';
+    add.disabled = remaining === 0 || /^sim$/i.test(row.data.Cancelado || '');
+    add.onclick = () => openDeliveryDialog(row, {api, todayInputValue, reload: async () => { state.expanded.add(rowKey); await loadSheet('encomendas'); }});
+    deliveries.append(text, add); card.append(deliveries);
+  }
+
   return card;
 }
 
@@ -2230,6 +2243,7 @@ function renderOrderDetailsPanel(row) {
 
   const actions = document.createElement("div");
   actions.className = "row-actions order-view-actions";
+  panel.append(renderDeliveryHistory(row.data));
   const editButton = document.createElement("button");
   editButton.className = "primary-button";
   editButton.type = "button";
@@ -2255,7 +2269,7 @@ function renderOrderForm(row, isDraft) {
   const grid = document.createElement("div");
   grid.className = "form-grid";
   const headers = state.headers.length ? state.headers : SHEETS.encomendas.headers;
-  headers.forEach((header) => {
+  headers.filter(header => header !== '_deliveries').forEach((header) => {
     grid.append(createInput("encomendas", header, valueOf(row, header)));
   });
   form.append(grid);
@@ -2366,10 +2380,10 @@ function renderMachines() {
     if (!isDraft) {
       const progress = maintenanceProgress(data);
       const maintenance = document.createElement('div'); maintenance.className = 'maintenance-summary';
-      const label = document.createElement('strong'); label.textContent = progress.due ? 'Manutenção necessária · ciclo de 350 h atingido' : `Próxima manutenção em ${formatNumber(progress.remaining)} h`;
-      const track = document.createElement('div'); track.className = 'maintenance-track'; track.setAttribute('role','progressbar'); track.setAttribute('aria-label','Ciclo de manutenção'); track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','350');track.setAttribute('aria-valuenow',String(Math.min(350,progress.hours)));
+      const label = document.createElement('strong'); label.textContent = progress.due ? 'Manutenção necessária · ciclo de 400 h atingido' : `Próxima manutenção em ${formatNumber(progress.remaining)} h`;
+      const track = document.createElement('div'); track.className = 'maintenance-track'; track.setAttribute('role','progressbar'); track.setAttribute('aria-label','Ciclo de manutenção'); track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','400');track.setAttribute('aria-valuenow',String(Math.min(400,progress.hours)));
       const fill = document.createElement('div');fill.style.width=`${progress.percent}%`;fill.style.backgroundColor=`hsl(${210 * (1-progress.percent/100)} 65% 48%)`;track.append(fill);
-      const info = document.createElement('small');info.textContent=`${formatNumber(progress.hours)} / 350 h · Última manutenção: ${data['Última manutenção'] ? formatDateDisplay(data['Última manutenção']) : 'Não informada'}`;
+      const info = document.createElement('small');info.textContent=`${formatNumber(progress.hours)} / 400 h · Última manutenção: ${data['Última manutenção'] ? formatDateDisplay(data['Última manutenção']) : 'Não informada'}`;
       maintenance.append(label,track,info);card.append(maintenance);
     }
     elements.content.append(card);
@@ -2737,14 +2751,16 @@ function render() {
           ? "Nova produção"
           : state.activeSheet === "reposicao"
             ? "Nova peça"
-          : "Adicionar linha";
+          : state.activeSheet === 'companyExpenses' ? 'Novo gasto' : "Adicionar linha";
 
   if (state.loading) {
     elements.content.innerHTML = `<div class="empty-state"><h2>Carregando...</h2><p>Buscando os dados.</p></div>`;
     return;
   }
 
-  if (state.activeSheet === 'productStock') {
+  if (state.activeSheet === 'companyExpenses') {
+    renderCompanyExpenses({state, elements, saveRow, deleteRow, formatMoney, todayInputValue});
+  } else if (state.activeSheet === 'productStock') {
     renderProductStock({state,elements,saveRow,setStatus});
   } else if (state.activeSheet === "painel") {
     renderMonthlyPanel({state,elements,formatMoney,formatNumber,todayInputValue});
@@ -2798,8 +2814,10 @@ function render() {
 
 async function initializeSession() {
   const session=await api('/api/auth/session');state.authenticationEnabled=session.enabled;
-  const logout=document.querySelector('#logoutButton');logout.hidden=!session.enabled;
+  const logout=document.querySelector('#logoutButton');logout.hidden=false;
+  logout.title=session.enabled ? 'Encerrar sessão e voltar ao login' : 'O login precisa ser configurado nesta instalação';
   logout.onclick=async()=>{
+    if(!session.enabled){setStatus('O login ainda não está configurado nesta instalação. Configure as credenciais de acesso para entrar e sair com segurança.','warning');return;}
     logout.disabled=true;
     const results=await Promise.all([...state.pendingAutosaves].map(key=>persistProductLocalData(key,state.productCosts[key])));
     if(results.some(result=>!result)){logout.disabled=false;setStatus('Salve as alterações pendentes antes de sair.','error');return;}
