@@ -14,8 +14,9 @@ function colorBadge(name) {
   return badge;
 }
 const chevron='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
-export function createFilamentPicker(rows,selected) {
-  const wrap=el('div','field filament-picker-field'),label=el('span','','Filamento utilizado');
+export function createFilamentPicker(rows,selected,options={}) {
+  const settings={label:'Filamento utilizado',eyebrow:'PRODUÇÃO',title:'Escolha o filamento',description:'Encontre o material pela marca, tipo ou cor.',...options};
+  const wrap=el('div','field filament-picker-field'),label=el('span','',settings.label);
   const input=el('input');input.type='hidden';input.value=rows.some(r=>String(r.rowNumber)===String(selected))?String(selected):'';
   const trigger=el('button','filament-picker-trigger');trigger.type='button';trigger.setAttribute('aria-haspopup','dialog');
   const drawTrigger=()=>{
@@ -27,7 +28,7 @@ export function createFilamentPicker(rows,selected) {
   drawTrigger();wrap.append(label,input,trigger);
   trigger.onclick=()=>{
     const dialog=el('dialog','filament-picker-dialog');dialog.setAttribute('aria-label','Selecionar filamento');
-    const header=el('div','filament-picker-header'),heading=el('div');heading.append(el('small','','PRODUÇÃO'),el('h2','','Escolha o filamento'),el('p','','Encontre o material pela marca, tipo ou cor.'));
+    const header=el('div','filament-picker-header'),heading=el('div');heading.append(el('small','',settings.eyebrow),el('h2','',settings.title),el('p','',settings.description));
     const close=el('button','filament-picker-close','×');close.type='button';close.setAttribute('aria-label','Fechar seleção de filamento');close.onclick=()=>dialog.close();header.append(heading,close);
     const search=el('input','filament-picker-search');search.type='search';search.placeholder='Buscar marca, material ou cor…';search.setAttribute('aria-label','Buscar filamento');
     const brands=el('div','filament-picker-brands');brands.setAttribute('aria-label','Filtrar por marca');

@@ -1,4 +1,9 @@
 import { normalizeProductStock } from './public/product-stock-data.js';
+import { createBambuCloud } from './lib/bambu-cloud.js';
+import { createBambuSessionStore } from './lib/bambu-session.js';
+import { createBambuUsage } from './lib/bambu-usage.js';
+import { createBackupScheduler, snapshotBackup } from './lib/backup.js';
+import { registerCloudMachines, bindProduction, recordCloudReport, completeCloudProductions } from './lib/bambu-automation.js';
 import { loadConfig } from './lib/config.js';
 import { readJson, writeJson } from './lib/storage.js';
 import { createAuth, sameSecret } from './lib/auth.js';
@@ -18,6 +23,30 @@ const publicDir = path.join(__dirname, "public");
 if (existsSync(path.join(__dirname, '.env'))) loadEnvFile(path.join(__dirname, '.env'));
 const config=loadConfig();
 const auth=createAuth(config);
+const bambuUsage = createBambuUsage(config.dataDir);
+const bambuCloud = createBambuCloud({ sessionStore: createBambuSessionStore(config.dataDir), usage: bambuUsage,
+  onInventory: devices => mutate(async () => {
+    const data = await readLocalSheets();
+    if (registerCloudMachines(data.sheets, devices)) await writeLocalSheets(data);
+  }),
+  onReport: (device, continuous) => mutate(async () => {
+    let data = await readLocalSheets();
+    registerCloudMachines(data.sheets, [device]);
+    recordCloudReport(data.sheets, device, continuous);
+    // Persist physical machine use even if stock validation blocks a production update.
+    await writeLocalSheets(data);
+    for (const candidate of data.sheets.producao.rows) {
+      const next = structuredClone(data);
+      const completed = completeCloudProductions(next.sheets, candidate.rowNumber);
+      if (!completed.length) continue;
+      try { await writeLocalSheets(next); data = next; }
+      catch (error) {
+        for (const row of data.sheets.producao.rows) if (completed.includes(row.rowNumber)) row.data._bambuSyncError = `A Bambu informou o término da impressão, mas a produção precisa de revisão: ${error.message}`;
+        await writeLocalSheets(data);
+      }
+    }
+  })
+});
 const localSheetsPath = path.join(config.dataDir, 'sheets.local.json');
 const productCostsPath = path.join(config.dataDir, 'product-costs.local.json');
 const port = config.port;
@@ -240,6 +269,15 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     const amount=machineNumber(rowData['Estoque atual (kg)']), price=machineNumber(rowData['Custo médio por kg']);
     if(!Number.isFinite(amount)||amount<0||!Number.isFinite(price)||price<0) throw Object.assign(new Error('Informe estoque e custo por kg válidos, maiores ou iguais a zero.'),{statusCode:400});
   }
+  if(sheetKey === 'reposicao') {
+    const invalid = message => Object.assign(new Error(message),{statusCode:400});
+    const name=String(rowData['Nome da peça']||'').trim(),price=machineNumber(rowData.Preço),stock=Number(String(rowData.Estoque??'').replace(',','.'));
+    if(!name)throw invalid('Informe o nome da peça.');
+    if(name.length>160||!Number.isFinite(price)||price<0)throw invalid('Informe um nome e um preço válidos.');
+    if(!Number.isSafeInteger(stock)||stock<0)throw invalid('Informe uma quantidade inteira maior ou igual a zero.');
+    if(rowData.Imagem&&(!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(rowData.Imagem)||rowData.Imagem.length>2000000))throw invalid('Foto inválida ou muito grande.');
+    rowData={Imagem:String(rowData.Imagem||''),'Nome da peça':name,Preço:String(rowData.Preço),Estoque:String(stock)};
+  }
   const targetRowNumber = Number(rowNumber || 0) || nextRowNumber(sheet.rows);
   if(sheetKey === 'productStock') {
     const sku = String(rowData.SKU || '').trim();
@@ -277,9 +315,14 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(maintenanceDate) || !Number.isFinite(Date.parse(maintenanceDate))) throw Object.assign(new Error('Data de manutenção inválida.'), {statusCode:400});
       const currentHours = desiredHours === undefined ? Number(existing?.data['Horas totais (h)'] || 0) : machineNumber(desiredHours);
       let laterHours = 0;
+      let cloudJobs = {}; try { cloudJobs = JSON.parse(existing?.data._bambuJobs || '{}'); } catch {}
+      if (!resetMaintenance) for (const job of Object.values(cloudJobs)) {
+        const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(job.endedAt));
+        if (day > maintenanceDate) laterHours += Number(job.hours) || 0;
+      }
       if (!resetMaintenance) for (const production of data.sheets.producao.rows) {
         if (production.data['Status da produção'] === 'Em produção' || String(production.data['Dia produção']).slice(0,10) <= maintenanceDate) continue;
-        try { for (const item of JSON.parse(production.data['Itens da produção'] || '[]')) if (Number(item.machineRow) === targetRowNumber) laterHours += Number(item.hours) || 0; } catch {}
+        try { for (const item of JSON.parse(production.data['Itens da produção'] || '[]')) if (Number(item.machineRow) === targetRowNumber && !cloudJobs[item.bambuJobKey]) laterHours += Number(item.hours) || 0; } catch {}
       }
       rowData._maintenanceHours = String(Math.max(0,currentHours - laterHours));
     }
@@ -326,6 +369,14 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
 
   const existingIndex = sheet.rows.findIndex((row) => Number(row.rowNumber) === targetRowNumber);
   const nextRow = { rowNumber: targetRowNumber, data: normalizedData };
+  if (sheetKey === 'maquinas') {
+    const previous = sheet.rows[existingIndex]?.data || {};
+    for (const key of ['_bambuId', '_bambuCurrent', '_bambuJobs']) {
+      delete nextRow.data[key];
+      if (previous[key] !== undefined) nextRow.data[key] = previous[key];
+    }
+  }
+  if (sheetKey === 'producao') bindProduction(data.sheets, nextRow, sheet.rows[existingIndex]);
 
   if (existingIndex >= 0) {
     sheet.rows[existingIndex] = nextRow;
@@ -491,12 +542,25 @@ async function serveStatic(requestUrl, response) {
 
 let mutationQueue = Promise.resolve();
 function mutate(task) { const result=mutationQueue.then(task);mutationQueue=result.catch(()=>{});return result; }
+const backups = createBackupScheduler({ hours: config.backupHours, keep: config.backupKeep, output: config.backupDir,
+  run: () => mutate(async () => {
+    await auth.flush(); await bambuUsage.flush();
+    return snapshotBackup(config.dataDir, config.backupDir, true);
+  }),
+  onError: () => console.error('Backup automático falhou. Confira espaço em disco e permissões do diretório de backup.')
+});
 async function handleApi(request, response, url) {
   try {
     auth.checkMutation(request);
     if(url.pathname==='/api/auth/login' && request.method==='POST') {await auth.login(request,response,await readBody(request));sendJson(response,200,{ok:true});return;}
     if(url.pathname==='/api/auth/automatic' && request.method==='POST') {sendJson(response,200,{ok:true,authenticated:await auth.automaticLogin(request,response)});return;}
     if(!auth.authenticated(request)) {sendJson(response,401,{ok:false,message:'Entre para acessar o sistema.'});return;}
+    if(url.pathname==='/api/system/status' && request.method==='GET') {sendJson(response,200,{ok:true,backups:backups.status()});return;}
+    if(url.pathname==='/api/bambu/status' && request.method==='GET') {sendJson(response,200,{ok:true,...bambuCloud.status()});return;}
+    if(url.pathname==='/api/bambu/usage' && request.method==='GET') {sendJson(response,200,{ok:true,...bambuUsage.history()});return;}
+    if(url.pathname==='/api/bambu/code' && request.method==='POST') {const body=await readBody(request);sendJson(response,200,await bambuCloud.requestCode(body.email));return;}
+    if(url.pathname==='/api/bambu/connect' && request.method==='POST') {const body=await readBody(request);sendJson(response,200,await bambuCloud.verify(body.code));return;}
+    if(url.pathname==='/api/bambu/disconnect' && request.method==='POST') {await bambuCloud.disconnect();sendJson(response,200,{ok:true});return;}
     if(url.pathname==='/api/auth/accesses' && request.method==='GET') {sendJson(response,200,{ok:true,...await auth.accesses()});return;}
     if(url.pathname==='/api/auth/revoke-ip' && request.method==='POST') {const body=await readBody(request);await auth.revoke(body.ip);sendJson(response,200,{ok:true});return;}
     if(url.pathname==='/api/auth/session' && request.method==='GET') {sendJson(response,200,{ok:true,enabled:auth.enabled,username:config.username});return;}
@@ -583,15 +647,24 @@ try {
   await readLocalSheets();
   await readProductCosts();
   if(auth.enabled)await auth.init();
+  await bambuUsage.init();
+  await bambuCloud.init();
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,config.host,resolve);});
   console.log('Sistema Flamez iniciado na porta '+port+'. Autenticação: '+(auth.enabled?'ativa':'modo local'));
-} catch(error) {await releaseLock?.();console.error('Não foi possível iniciar:',error.message);process.exitCode=1;}
+  backups.start();
+} catch(error) {
+  bambuCloud.close(); await bambuCloud.flush(); await auth.flush();
+  await releaseLock?.(); console.error('Não foi possível iniciar:',error.message); process.exitCode=1;
+}
 let stopping=false;
 async function shutdown() {
   if(stopping)return;stopping=true;
+  bambuCloud.close();
   const timeout=setTimeout(()=>process.exit(1),30_000);timeout.unref();
   await new Promise(resolve=>server.close(resolve));
+  await backups.stop();
   await mutationQueue;
+  await bambuCloud.flush();
   await auth.flush();
   await releaseLock?.();
   clearTimeout(timeout);

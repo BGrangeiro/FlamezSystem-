@@ -30,7 +30,10 @@
           <button class="tab" data-sheet="reposicao" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a5 5 0 0 0-6.3 6.3L3 18l3 3 5.2-5.2a5 5 0 0 0 6.3-6.3L14 13l-3-3 3.5-3.5Z"/></svg><span>Peças</span></button>
           <button class="tab" data-sheet="painel" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 3v18h17M8 17v-5m5 5V7m5 10V4"/></svg><span>Painel do mês</span></button>
         </nav>
-
+        <button id="logoutButton" class="sidebar-logout" type="button" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg>
+          <span>Sair</span>
+        </button>
       </aside>
 
       <main class="workspace">
@@ -41,13 +44,17 @@
           </div>
 
           <div class="actions">
-            <button id="accessButton" class="topbar-button" type="button" hidden>Acessos</button>
-            <button id="logoutButton" class="topbar-button" type="button" hidden>Sair</button>
-            <span id="syncStatus" class="status neutral">Dados salvos</span>
+            <span id="syncStatus" class="status neutral" hidden aria-live="polite"></span>
             <button id="variationButton" class="topbar-button hidden" type="button">Adicionar variação</button>
             <button id="refreshButton" class="icon-button" title="Atualizar dados" type="button">↻</button>
           </div>
         </header>
+
+        <nav id="machineTabs" class="product-section-tabs machine-section-tabs hidden" role="tablist" aria-label="Seções de máquinas">
+          <button id="machineCloudTab" class="product-section-tab active" data-machine-tab="cloud" type="button" role="tab" aria-selected="true" aria-controls="content">Bambu Cloud</button>
+          <button id="machineRegisteredTab" class="product-section-tab" data-machine-tab="registered" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Máquinas cadastradas</button>
+          <button id="machineLogTab" class="product-section-tab" data-machine-tab="log" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Log</button>
+        </nav>
 
         <section class="toolbar">
           <input id="searchInput" type="search" placeholder="Buscar..." />

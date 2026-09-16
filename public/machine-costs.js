@@ -30,8 +30,8 @@ export function calculateMachineCost(data) {
 export function normalizeMachineData(data) {
   const next = { ...data };
   if (next["Horas iniciais (h)"] === undefined || next["Horas iniciais (h)"] === "") next["Horas iniciais (h)"] = "0";
-  if (next[MACHINE_HEADERS[5]] === undefined || next[MACHINE_HEADERS[5]] === "") next[MACHINE_HEADERS[5]] = "0";
-  if (next[MACHINE_HEADERS[6]] === undefined || next[MACHINE_HEADERS[6]] === "") next[MACHINE_HEADERS[6]] = "0,11";
+  if (!next._bambuId && (next[MACHINE_HEADERS[5]] === undefined || next[MACHINE_HEADERS[5]] === "")) next[MACHINE_HEADERS[5]] = "0";
+  if (!next._bambuId && (next[MACHINE_HEADERS[6]] === undefined || next[MACHINE_HEADERS[6]] === "")) next[MACHINE_HEADERS[6]] = "0,11";
   const total = calculateMachineCost(next);
   next[MACHINE_HEADERS[7]] = total === null ? "" : String(total);
   return next;
@@ -45,6 +45,9 @@ export function updateMachineHours(sheets) {
     try { items = JSON.parse(row.data["Itens da produção"] || "[]"); } catch { continue; }
     if (!Array.isArray(items)) continue;
     for (const item of items) {
+      const machine = sheets.maquinas.rows.find(m => String(m.rowNumber) === String(item.machineRow));
+      let cloudJobs = {}; try { cloudJobs = JSON.parse(machine?.data._bambuJobs || '{}'); } catch {}
+      if (item.bambuJobKey && cloudJobs[item.bambuJobKey]) continue;
       const value = machineNumber(item.hours);
       if (item.machineRow == null || !Number.isFinite(value) || value < 0) continue;
       const key = String(item.machineRow);
@@ -52,7 +55,9 @@ export function updateMachineHours(sheets) {
     }
   }
   for (const row of sheets.maquinas.rows) {
-    const registered = hours.get(String(row.rowNumber)) || 0;
+    let cloudJobs = {}; try { cloudJobs = JSON.parse(row.data._bambuJobs || '{}'); } catch {}
+    const cloudHours = Object.values(cloudJobs).reduce((n, job) => n + (Number(job.hours) || 0), 0);
+    const registered = (hours.get(String(row.rowNumber)) || 0) + cloudHours;
     const initial = Number(String(row.data["Horas iniciais (h)"] || 0).replace(',', '.')) || 0;
     row.data["Horas registradas em produção (h)"] = String(registered);
     row.data["Horas totais (h)"] = String(Math.max(0, initial + registered));

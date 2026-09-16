@@ -9,6 +9,7 @@ Group=flamez
 WorkingDirectory=/opt/flamez
 EnvironmentFile=/etc/flamez/flamez.env
 ExecStart=/usr/bin/node /opt/flamez/server.js
+ExecStartPre=/usr/bin/node /opt/flamez/scripts/preflight.js
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=35

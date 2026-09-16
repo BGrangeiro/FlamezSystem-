@@ -10,10 +10,15 @@
     "test": "node --test",
     "credentials": "node scripts/credentials.js",
     "backup": "node scripts/backup.js",
+    "backup:verify": "node scripts/backup.js verify",
+    "preflight": "node scripts/preflight.js",
     "restore": "node scripts/backup.js restore"
   },
   "engines": {
     "node": ">=22.16.0"
   },
-  "description": "Gestão de produtos, produção, estoque e custos para impressão 3D"
+  "description": "Gestão de produtos, produção, estoque e custos para impressão 3D",
+  "dependencies": {
+    "mqtt": "^5.15.2"
+  }
 }

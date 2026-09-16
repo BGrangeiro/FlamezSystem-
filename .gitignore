@@ -12,3 +12,9 @@ data/
 backups/
 .flamez.lock
 *.tmp
+bambu-session.key
+bambu-session.local.json
+bambu-usage.local.json
+*.pem
+*.p12
+*.pfx

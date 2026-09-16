@@ -1,7 +1,8 @@
-import {showAccessLog} from './access-log.js';
 import { renderProductStock } from './product-stock.js';
+import { renderBambuMonitor, stopBambuMonitor } from './bambu-monitor.js';
+import { renderBambuUsageLog, stopBambuUsageLog } from './bambu-usage.js';
 import { renderMonthlyPanel } from './monthly-panel.js';
-import { renderFilamentSettings } from './filament-settings.js';
+import { renderFilamentSettings, prepareFilamentPhoto } from './filament-settings.js';
 import { MACHINE_HEADERS, calculateMachineCost, normalizeMachineData, machineNumber, maintenanceProgress } from "./machine-costs.js";
 import { renderProduction } from "./production.js";
 
@@ -32,8 +33,9 @@ const SHEETS = {
     }
   },
   reposicao: {
-    title: "Peças de Reposição",
-    primary: "Nome da peça"
+    title: "Estoque de peças",
+    primary: "Nome da peça",
+    headers: ["Imagem", "Nome da peça", "Preço", "Estoque"]
   },
   maquinas: {
     title: "Máquinas",
@@ -144,6 +146,7 @@ const LOCAL_PRODUCT_COSTS_KEY = "sistemaFlamez.productCosts";
 const LOCAL_AUTOSAVE_DELAY_MS = 700;
 
 const state = {
+  machineTab: 'cloud',
   filamentTab: 'stock',
   activeSheet: "produtos",
   authenticationEnabled: false,
@@ -164,6 +167,8 @@ const state = {
   editingProduction: new Set(),
   productionProducts: [],
   productionMachines: [],
+  productionFilaments: [],
+  filamentBrands: [],
   draft: null,
   draftMeta: null,
   loading: false,
@@ -179,6 +184,9 @@ const elements = {
   searchInput: document.querySelector("#searchInput"),
   addButton: document.querySelector("#addButton"),
   content: document.querySelector("#content"),
+  machineTabs: document.querySelector('#machineTabs'),
+  machineTabButtons: [...document.querySelectorAll('[data-machine-tab]')],
+  toolbar: document.querySelector('.toolbar'),
   variationDialog: document.querySelector("#variationDialog"),
   variationSource: document.querySelector("#variationSource"),
   createVariationButton: document.querySelector("#createVariationButton"),
@@ -188,6 +196,7 @@ const elements = {
 function setStatus(text, type = "neutral") {
   elements.syncStatus.textContent = text;
   elements.syncStatus.className = `status ${type}`;
+  elements.syncStatus.hidden = type === "ok" || text === "Dados salvos";
 }
 
 function readMirroredProductCosts() {
@@ -624,21 +633,26 @@ function openProductNotes(row, rowKey) {
 }
 
 function emptyMaterialRow() {
-  return { name: "", kgPrice: "", usedGrams: "" };
+  return { filamentBrand: "", name: "", kgPrice: "", usedGrams: "" };
 }
 
 function normalizeMaterialRows(cost) {
   const savedRows = Array.isArray(cost.materials) ? cost.materials : [];
-  const rows = savedRows.map((material) => ({
+  const rows = savedRows.map((material) => {
+    const legacyFilament = state.productionFilaments.find(row => String(row.rowNumber) === String(material?.filamentStockRow ?? ''));
+    return {
+      filamentBrand: String(material?.filamentBrand || legacyFilament?.data?.Marca || ""),
       name: String(material?.name || ""),
       kgPrice: String(material?.kgPrice ?? material?.filamentKgPrice ?? ""),
       usedGrams: String(material?.usedGrams ?? material?.filamentUsedGrams ?? "")
-    }));
+    };
+  });
 
   if (rows.length) return rows;
 
   if (cost.filamentKgPrice || cost.filamentUsedGrams) {
     return [{
+      filamentBrand: "",
       name: "",
       kgPrice: String(cost.filamentKgPrice || ""),
       usedGrams: String(cost.filamentUsedGrams || "")
@@ -851,6 +865,7 @@ async function saveRow(sheet, rowNumber, data, button) {
     state.draft = null;
     state.draftMeta = null;
     if (sheet === "maquinas") state.editingMachines.delete(String(payload.rowNumber));
+    if (sheet === 'reposicao') editingParts.delete(String(payload.rowNumber));
     if (sheet === "producao") state.editingProduction.delete(`production:${payload.rowNumber}`);
     if (sheet === "encomendas") {
       state.editingOrders.delete(String(rowNumber));
@@ -1439,13 +1454,14 @@ function readMaterialRows(form, options = {}) {
   const rows = [];
   form.querySelectorAll("[data-material-row]").forEach((row) => {
     rows.push({
+      filamentBrand: row.querySelector("[data-material-brand]")?.value || "",
       name: row.querySelector("[data-material-name]")?.value || "",
       kgPrice: row.querySelector("[data-material-kg-price]")?.value || "",
       usedGrams: row.querySelector("[data-material-used-grams]")?.value || ""
     });
   });
   if (keepEmpty) return rows;
-  return rows.filter((material) => material.name || material.kgPrice || material.usedGrams);
+  return rows.filter((material) => material.filamentBrand || material.name || material.kgPrice || material.usedGrams);
 }
 
 function renderMaterialRowsField(key, cost, form) {
@@ -1505,6 +1521,18 @@ function renderMaterialRowsField(key, cost, form) {
         </div>
       </label>
     `;
+
+    const brandLabel = document.createElement('label');
+    brandLabel.className = 'product-material-brand';
+    const brandTitle = document.createElement('span'); brandTitle.textContent = 'Marca do filamento';
+    const brandSelect = document.createElement('select'); brandSelect.dataset.materialBrand = 'true';
+    brandSelect.append(new Option('Selecione a marca', ''));
+    const brands = [...new Set((state.filamentBrands || []).map(brand => brand.trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    brands.forEach(brand => brandSelect.append(new Option(brand,brand)));
+    if (material.filamentBrand && !brands.includes(material.filamentBrand)) brandSelect.append(new Option(`${material.filamentBrand} (não cadastrada)`,material.filamentBrand));
+    brandSelect.value = material.filamentBrand || '';
+    brandLabel.append(brandTitle,brandSelect);
+    row.prepend(brandLabel);
 
     const removeButton = document.createElement("button");
     removeButton.className = "icon-remove-button";
@@ -2265,6 +2293,11 @@ function renderOrderForm(row, isDraft) {
 
 function renderMachines() {
   elements.content.replaceChildren();
+  if (state.machineTab === 'cloud') {
+    renderBambuMonitor(elements.content, api);
+    return;
+  }
+  if (state.machineTab === 'log') { renderBambuUsageLog(elements.content, api); return; }
   const rows = state.draft ? [state.draft, ...filteredRows()] : filteredRows();
   if (!rows.length) {
     elements.content.append(elements.emptyStateTemplate.content.cloneNode(true));
@@ -2298,6 +2331,13 @@ function renderMachines() {
     title.className = "product-cell product-name";
     title.innerHTML = `<strong>${escapeHtml(data["Nome da máquina"] || (isDraft ? "Nova máquina" : "Máquina sem nome"))}</strong><span>${escapeHtml(data.Modelo || "Modelo não informado")}</span>`;
     summary.append(chevron, title);
+    const missing = ['Nome da máquina', 'Modelo', 'Valor de aquisição', 'Vida útil estimada (h)', 'Manutenção estimada na vida útil', 'Custo de funcionamento (R$/h)', 'Última manutenção'].filter(key => !String(data[key] ?? '').trim());
+    if (!isDraft && missing.length) {
+      const notice = document.createElement('details'); notice.className = 'machine-missing-info';
+      const icon = document.createElement('summary'); icon.textContent = 'i'; icon.setAttribute('aria-label', 'Informações pendentes da máquina');
+      const content = document.createElement('div'); content.textContent = `Complete: ${missing.join(', ')}.`;
+      notice.append(icon, content); title.append(notice);
+    }
     const display = (header) => {
       const value = data[header];
       if (value === "" || value === undefined) return "Não informado";
@@ -2441,6 +2481,136 @@ function renderMachines() {
   });
 }
 
+function priorityValue(value) {
+  const text = String(value || '');
+  if (/alta/i.test(text)) return 'Alta Prioridade';
+  if (/m[eé]dia/i.test(text)) return 'Média Prioridade';
+  if (/baixa|pouca/i.test(text)) return 'Baixa Prioridade';
+  return '';
+}
+
+function createPriorityPicker(currentValue) {
+  const levels = [
+    {value:'Baixa Prioridade',label:'Baixa',description:'A compra pode aguardar.',tone:'low'},
+    {value:'Média Prioridade',label:'Média',description:'Planeje a próxima reposição.',tone:'medium'},
+    {value:'Alta Prioridade',label:'Alta',description:'Comprar em breve.',tone:'high'}
+  ];
+  const wrap = document.createElement('div'); wrap.className = 'priority-picker';
+  const input = document.createElement('input'); input.type = 'hidden'; input.value = priorityValue(currentValue);
+  const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'priority-trigger';
+  const draw = () => {
+    const level = levels.find(item => item.value === input.value);
+    trigger.dataset.priority = level?.tone || '';
+    trigger.textContent = level ? `${level.label} prioridade` : 'Definir urgência';
+    trigger.setAttribute('aria-label',level ? `Alterar urgência: ${level.label}` : 'Definir urgência de compra');
+  };
+  trigger.addEventListener('click',()=>{
+    const dialog = document.createElement('dialog'); dialog.className = 'priority-dialog'; dialog.setAttribute('aria-label','Urgência de compra');
+    const header = document.createElement('div'); header.className = 'priority-dialog-header';
+    const heading = document.createElement('div'); heading.innerHTML = '<small>ESTOQUE DE FILAMENTOS</small><h2>Urgência de compra</h2><p>Escolha quando este filamento precisa ser reposto.</p>';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'priority-dialog-close'; close.textContent = '×'; close.setAttribute('aria-label','Fechar');
+    close.onclick=()=>dialog.close(); header.append(heading,close);
+    const options = document.createElement('div'); options.className = 'priority-options';
+    levels.forEach(level=>{
+      const option = document.createElement('button'); option.type = 'button'; option.className = `priority-option ${level.tone}`;
+      option.setAttribute('aria-pressed',String(input.value === level.value));
+      option.innerHTML = `<span class="priority-dot" aria-hidden="true"></span><span><strong>${level.label}</strong><small>${level.description}</small></span><span class="priority-check">${input.value === level.value ? '✓' : ''}</span>`;
+      option.onclick=()=>{input.value=level.value;draw();input.dispatchEvent(new Event('change',{bubbles:true}));dialog.close();};
+      options.append(option);
+    });
+    dialog.append(header,options);
+    dialog.addEventListener('close',()=>{dialog.remove();trigger.focus();},{once:true});
+    document.body.append(dialog); dialog.showModal();
+  });
+  draw(); wrap.append(input,trigger); return {wrap,input};
+}
+
+function maxTwoDecimalStock(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  const number = Number(text.replace(',','.'));
+  if (!Number.isFinite(number)) return text;
+  return String(Math.round((number + Number.EPSILON) * 100) / 100);
+}
+
+const editingParts = new Set();
+
+function renderPartsStock() {
+  const rows = filteredRows();
+  elements.content.replaceChildren();
+  if (!rows.length && !state.draft) {elements.content.append(elements.emptyStateTemplate.content.cloneNode(true));return;}
+  const grid = document.createElement('div'); grid.className = 'parts-stock-grid';
+  const tableRows = state.draft ? [state.draft,...rows] : rows;
+  tableRows.forEach(row=>{
+    const isDraft = row.rowNumber === null;
+    if (!isDraft && !editingParts.has(String(row.rowNumber))) {
+      const card = document.createElement('article'); card.className = 'part-stock-card part-stock-readonly';
+      const photo = String(row.data.Imagem || '');
+      if (/^data:image\/(png|jpeg|webp);base64,/.test(photo)) {
+        const preview = document.createElement('div'); preview.className = 'part-photo-preview';
+        const image = document.createElement('img'); image.src = photo; image.alt = row.data['Nome da peça'] || 'Foto da peça'; preview.append(image); card.append(preview);
+      }
+      const title = document.createElement('h2'); title.className = 'part-stock-name'; title.textContent = row.data['Nome da peça'];
+      const details = document.createElement('dl'); details.className = 'part-stock-details';
+      [['Preço da peça', formatMoney(row.data.Preço)], ['Em estoque', `${row.data.Estoque || '0'} un`]].forEach(([label, value]) => {
+        const group = document.createElement('div'); const dt = document.createElement('dt'); dt.textContent = label;
+        const dd = document.createElement('dd'); dd.textContent = value; group.append(dt, dd); details.append(group);
+      });
+      const actions = document.createElement('div'); actions.className = 'row-actions part-actions';
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'ghost-light-button small-button'; edit.textContent = 'Editar';
+      edit.setAttribute('aria-label', `Editar ${row.data['Nome da peça']}`);
+      edit.onclick = () => { editingParts.add(String(row.rowNumber)); renderPartsStock(); };
+      actions.append(edit); card.append(title, details, actions); grid.append(card); return;
+    }
+    const form = document.createElement('form'); form.className = 'part-stock-card';
+    let photo = String(row.data.Imagem || ''), photoBusy = false;
+    const photoField = document.createElement('div'); photoField.className = 'part-photo-field';
+    const photoLabel = document.createElement('label'); photoLabel.className = 'part-photo-control';
+    const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/jpeg,image/png,image/webp'; file.hidden = true;
+    const preview = document.createElement('span'); preview.className = 'part-photo-preview';
+    const drawPhoto = () => {
+      preview.replaceChildren();
+      if (/^data:image\/(png|jpeg|webp);base64,/.test(photo)) {const image=document.createElement('img');image.src=photo;image.alt='Foto da peça';preview.append(image);}
+      else {const icon=document.createElement('span');icon.className='part-photo-placeholder';icon.innerHTML='<strong>+</strong><small>Adicionar foto</small>';preview.append(icon);}
+    };
+    drawPhoto(); photoLabel.append(file,preview); photoField.append(photoLabel);
+    const removePhoto = document.createElement('button'); removePhoto.type='button'; removePhoto.className='part-remove-photo'; removePhoto.textContent='Remover foto'; removePhoto.hidden=!photo;
+    removePhoto.onclick=()=>{photo='';removePhoto.hidden=true;drawPhoto();}; photoField.append(removePhoto);
+    file.addEventListener('change',async()=>{
+      if(!file.files[0])return; photoBusy=true; file.disabled=true; setStatus('Preparando foto…','warning');
+      try{photo=await prepareFilamentPhoto(file.files[0]);removePhoto.hidden=false;drawPhoto();setStatus('Foto pronta para salvar','ok');}
+      catch(error){setStatus(error.message,'error');}
+      finally{photoBusy=false;file.disabled=false;file.value='';}
+    });
+    const fields = document.createElement('div'); fields.className='part-fields';
+    const makeField=(labelText,value)=>{const label=document.createElement('label');label.className='field';const title=document.createElement('span');title.textContent=labelText;const input=document.createElement('input');input.type='text';input.value=value||'';label.append(title,input);return {label,input};};
+    const name=makeField('Nome da peça',row.data['Nome da peça']);name.input.required=true;name.input.maxLength=160;
+    const price=makeField('Preço da peça',row.data.Preço);price.input.inputMode='decimal';price.input.placeholder='0,00';
+    const currency=document.createElement('div');currency.className='part-currency';const prefix=document.createElement('span');prefix.textContent='R$';price.label.replaceChild(currency,price.input);currency.append(prefix,price.input);
+    const stock=makeField('Quantidade em estoque',row.data.Estoque);stock.input.inputMode='numeric';stock.input.placeholder='0';
+    fields.append(name.label,price.label,stock.label);
+    const feedback=document.createElement('p');feedback.className='part-feedback';feedback.setAttribute('role','alert');
+    const actions=document.createElement('div');actions.className='row-actions part-actions';
+    const remove=document.createElement('button');remove.type='button';remove.className='danger-button';remove.textContent=isDraft?'Cancelar':'Excluir';remove.onclick=()=>deleteRow('reposicao',isDraft?null:row.rowNumber);
+    const save=document.createElement('button');save.type='submit';save.className='primary-button';save.textContent=isDraft?'Criar peça':'Salvar';actions.append(remove,save);
+    if (!isDraft) {
+      const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'ghost-light-button'; cancel.textContent = 'Cancelar';
+      cancel.onclick = () => { editingParts.delete(String(row.rowNumber)); renderPartsStock(); }; actions.insertBefore(cancel, save);
+    }
+    form.addEventListener('submit',event=>{
+      event.preventDefault();feedback.textContent='';
+      const numericPrice=parseLocaleNumber(price.input.value),numericStock=Number(stock.input.value.replace(',','.'));
+      if(photoBusy){feedback.textContent='Aguarde o processamento da foto.';return;}
+      if(!name.input.value.trim()){feedback.textContent='Informe o nome da peça.';name.input.focus();return;}
+      if(!Number.isFinite(numericPrice)||numericPrice<0){feedback.textContent='Informe um preço válido.';price.input.focus();return;}
+      if(!Number.isSafeInteger(numericStock)||numericStock<0){feedback.textContent='Informe uma quantidade inteira maior ou igual a zero.';stock.input.focus();return;}
+      saveRow('reposicao',isDraft?null:row.rowNumber,{Imagem:photo,'Nome da peça':name.input.value.trim(),Preço:price.input.value.trim(),Estoque:String(numericStock)},save);
+    });
+    form.append(photoField,fields,feedback,actions);grid.append(form);
+  });
+  elements.content.append(grid);
+}
+
 function renderGenericTable() {
   const rows = filteredRows();
   elements.content.replaceChildren();
@@ -2476,33 +2646,26 @@ function renderGenericTable() {
     state.headers.forEach((header) => {
       const td = document.createElement("td");
       const priority = state.activeSheet === 'filamentos' && header === 'Urgência de compra';
-      const input = document.createElement(priority ? "select" : "input");
+      let input;
       if (priority) {
-        input.append(new Option('Selecionar', ''));
-        ['Baixa', 'Média', 'Alta'].forEach(level => input.append(new Option(level, `${level} Prioridade`)));
+        const picker = createPriorityPicker(valueOf(row,header)); input = picker.input; td.append(picker.wrap);
+      } else {
+        input = document.createElement('input'); input.className = 'table-input'; input.type = guessInputType(header); input.value = valueOf(row, header);
       }
-      input.className = "table-input";
       input.name = header;
-      if (!priority) input.type = guessInputType(header);
-      input.value = valueOf(row, header);
-      if (priority) {
-        const original = valueOf(row, header);
-        if (original && !input.value) {
-          const match = /alta/i.test(original) ? 'Alta' : /m[eé]dia/i.test(original) ? 'Média' : /baixa|pouca/i.test(original) ? 'Baixa' : null;
-          if (match) input.value = `${match} Prioridade`;
-          else { input.append(new Option(original, original)); input.value = original; }
-        }
-        const color = () => { input.dataset.priority = /alta/i.test(input.value) ? 'high' : /m[eé]dia/i.test(input.value) ? 'medium' : input.value ? 'low' : ''; };
-        input.addEventListener('change', color); color();
-      }
-      if (header === "Última manutenção") input.type = "date";
+      if (header === "Última manutenção" && !priority) input.type = "date";
       inputs[header] = input;
-      if(state.activeSheet === 'filamentos' && header === 'Custo médio por kg') {
+      if(state.activeSheet === 'filamentos' && header === 'Estoque atual (kg)') {
+        input.inputMode = 'decimal'; input.dataset.rawValue = input.value; input.value = maxTwoDecimalStock(input.value);
+        input.addEventListener('input',()=>{input.dataset.stockDirty='true';});
+        input.addEventListener('blur',()=>{if(input.dataset.stockDirty==='true')input.value=maxTwoDecimalStock(input.value);});
+        td.append(input);
+      } else if(state.activeSheet === 'filamentos' && header === 'Custo médio por kg') {
         const currency = document.createElement('div'); currency.className = 'filament-currency';
         const prefix = document.createElement('span'); prefix.textContent = 'R$';
         input.inputMode = 'decimal'; input.setAttribute('aria-label','Custo médio por kg em reais');
         currency.append(prefix,input);td.append(currency);
-      } else td.append(input);
+      } else if(!priority) td.append(input);
       tr.append(td);
     });
 
@@ -2519,7 +2682,7 @@ function renderGenericTable() {
     saveButton.type = "button";
     saveButton.textContent = "Salvar";
     saveButton.addEventListener("click", () => {
-      const data = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value.trim()]));
+      const data = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.dataset.rawValue !== undefined && input.dataset.stockDirty !== 'true' ? input.dataset.rawValue : input.value.trim()]));
       saveRow(state.activeSheet, isDraft ? null : row.rowNumber, data, saveButton);
     });
     actions.append(deleteButton, saveButton);
@@ -2534,6 +2697,25 @@ function renderGenericTable() {
 }
 
 function render() {
+  stopBambuMonitor();
+  stopBambuUsageLog();
+  const isMachines = state.activeSheet === 'maquinas';
+  const isCloud = isMachines && state.machineTab === 'cloud';
+  elements.machineTabs.classList.toggle('hidden', !isMachines);
+  elements.toolbar.classList.toggle('hidden', isMachines && state.machineTab !== 'registered');
+  elements.machineTabButtons.forEach(button => {
+    const selected = button.dataset.machineTab === state.machineTab;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  if (isMachines) {
+    elements.content.setAttribute('role', 'tabpanel');
+    elements.content.setAttribute('aria-labelledby', isCloud ? 'machineCloudTab' : state.machineTab === 'log' ? 'machineLogTab' : 'machineRegisteredTab');
+  } else {
+    elements.content.removeAttribute('role');
+    elements.content.removeAttribute('aria-labelledby');
+  }
   const config = SHEETS[state.activeSheet];
   elements.viewTitle.textContent = config.title;
   elements.tabs.forEach((tab) => {
@@ -2553,6 +2735,8 @@ function render() {
         ? "Nova máquina"
         : state.activeSheet === "producao"
           ? "Nova produção"
+          : state.activeSheet === "reposicao"
+            ? "Nova peça"
           : "Adicionar linha";
 
   if (state.loading) {
@@ -2572,6 +2756,8 @@ function render() {
     renderMachines();
   } else if (state.activeSheet === "producao") {
     renderProduction({ state, elements, escapeHtml, formatMoney, formatNumber, formatDateDisplay, productKey, render, saveRow, deleteRow, removeProductionItem, todayInputValue });
+  } else if (state.activeSheet === 'reposicao') {
+    renderPartsStock();
   } else if (state.activeSheet === 'filamentos') {
     if (state.filamentTab === 'stock') renderGenericTable();
     else elements.content.replaceChildren();
@@ -2613,7 +2799,6 @@ function render() {
 async function initializeSession() {
   const session=await api('/api/auth/session');state.authenticationEnabled=session.enabled;
   const logout=document.querySelector('#logoutButton');logout.hidden=!session.enabled;
-  const accessButton=document.querySelector('#accessButton');accessButton.hidden=!session.enabled;accessButton.onclick=()=>showAccessLog(api);
   logout.onclick=async()=>{
     logout.disabled=true;
     const results=await Promise.all([...state.pendingAutosaves].map(key=>persistProductLocalData(key,state.productCosts[key])));
@@ -2643,9 +2828,11 @@ async function loadSheet(sheet = state.activeSheet) {
       state.stockProducts = products.rows || [];
     }
     if (sheet === "produtos") {
-      const machines=await api("/api/sheets?sheet=maquinas");
+      const [machines,filaments,filamentSettings]=await Promise.all([api("/api/sheets?sheet=maquinas"),api("/api/sheets?sheet=filamentos"),api("/api/sheets?sheet=filamentSettings")]);
       if(requestId !== state.loadRequestId)return;
       state.productionMachines=machines.rows||[];
+      state.productionFilaments=filaments.rows||[];
+      state.filamentBrands=[...new Set((filamentSettings.rows||[]).map(row=>row.data.Marca).filter(Boolean))];
     }
     if (sheet === "painel") {
       const machines = await api("/api/sheets?sheet=maquinas");
@@ -2702,6 +2889,37 @@ elements.tabs.forEach((tab) => {
 });
 
 elements.refreshButton.addEventListener("click", () => loadSheet(state.activeSheet));
+
+// Refresh telemetry-driven changes without replacing a form the user is editing.
+let automationRefreshing = false;
+setInterval(async () => {
+  const sheet = state.activeSheet;
+  const eligible = sheet === 'producao' || (sheet === 'maquinas' && state.machineTab === 'registered');
+  const editing = () => state.loading || state.draft || state.editingProduction.size || state.editingMachines.size || document.querySelector('dialog[open], .production-status-editor') || document.activeElement?.closest('input, select, textarea, .production-status-dropdown, .machine-missing-info');
+  if (!eligible || document.hidden || automationRefreshing || editing()) return;
+  automationRefreshing = true;
+  try {
+    const payload = await api(`/api/sheets?sheet=${sheet}`);
+    if (state.activeSheet === sheet && !editing() && JSON.stringify(payload.rows) !== JSON.stringify(state.rows)) { state.rows = payload.rows || []; render(); }
+  } catch { /* The manual refresh remains available during an interruption. */ }
+  finally { automationRefreshing = false; }
+}, 10000);
+elements.machineTabButtons.forEach((button, index) => {
+  button.addEventListener('click', () => {
+    if (state.machineTab === button.dataset.machineTab) return;
+    state.machineTab = button.dataset.machineTab;
+    render();
+  });
+  button.addEventListener('keydown', event => {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const count = elements.machineTabButtons.length;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + count) % count;
+    elements.machineTabButtons[next].focus();
+    elements.machineTabButtons[next].click();
+  });
+});
 elements.searchInput.addEventListener("input", render);
 window.addEventListener("beforeunload", flushPendingProductAutosaves);
 elements.variationButton.addEventListener("click", openVariationDialog);

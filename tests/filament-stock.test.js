@@ -22,6 +22,10 @@ test('produção movimenta estoque e horas sem duplicar baixas', async () => {
     assert.equal((await api.readLocalSheets()).sheets.productStock.rows[0].data.Foto,'data:image/png;base64,aGVsbG8=');
     await assert.rejects(api.upsertLocalRow('productStock',2,{SKU:'A01',Cores:JSON.stringify([{color:'Branco',quantity:-2}])}),/quantidade/i);
     assert.equal((await api.readLocalSheets()).sheets.productStock.rows[0].data.Quantidade,'10');
+    const part=await api.upsertLocalRow('reposicao',2,{Imagem:'data:image/png;base64,aGVsbG8=','Nome da peça':'Bico 0,4 mm',Preço:'29,90',Estoque:'3'});
+    assert.equal(part.data.Estoque,'3');assert.equal(part.data.Imagem,'data:image/png;base64,aGVsbG8=');
+    await assert.rejects(api.upsertLocalRow('reposicao',3,{'Nome da peça':'',Preço:'10',Estoque:'1'}),/nome da peça/i);
+    await assert.rejects(api.upsertLocalRow('reposicao',3,{'Nome da peça':'Correia',Preço:'10',Estoque:'1,5'}),/quantidade inteira/i);
     const item={name:'Teste',sku:'A01',quantity:1,used:300,total:30,filamentStockRow:2,machineRow:2,machineRate:1.11,hours:10,failureHours:10};
     const save=(status,items=[item],row=2)=>api.upsertLocalRow('producao',row,{'Dia produção':'2026-09-14','Código do produto':'A01','Status da produção':status,'Itens da produção':JSON.stringify(items)});
     const state=async()=>{const {sheets:s}=await api.readLocalSheets();return {kg:Number(s.filamentos.rows[0].data['Estoque atual (kg)']),hours:Number(s.maquinas.rows[0].data['Horas totais (h)']),logs:s.filamentLog.rows.length,s};};

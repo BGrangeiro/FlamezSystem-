@@ -60,6 +60,7 @@ test('HTTP: login, proteção de API, CSRF, limites, dados privados e logout',as
     assert.equal((await fetch(base+'/healthz')).status,200);
     assert.equal((await fetch(base+'/',{redirect:'manual'})).status,302);
     assert.equal((await fetch(base+'/api/sheets')).status,401);
+    assert.equal((await fetch(base+'/api/bambu/usage')).status,401);
     assert.equal((await fetch(base+'/login')).status,200);
     const headers={'content-type':'application/json',origin};
     const post=(route,body,h=headers)=>fetch(base+route,{method:'POST',headers:h,body:typeof body==='string'?body:JSON.stringify(body)});
@@ -68,6 +69,8 @@ test('HTTP: login, proteção de API, CSRF, limites, dados privados e logout',as
     assert.match(login.headers.get('set-cookie'),/HttpOnly; SameSite=Strict;.*Secure/);
     const cookie=login.headers.get('set-cookie').split(';')[0];headers.cookie=cookie;
     assert.equal((await fetch(base+'/api/sheets',{headers})).status,200);
+    assert.deepEqual((await (await fetch(base+'/api/bambu/usage',{headers})).json()).printers,[]);
+    assert.equal((await fetch(base+'/bambu-usage.local.json',{headers})).status,404);
     assert.equal((await fetch(base+'/',{headers})).headers.get('x-frame-options'),'DENY');
     for(const route of ['/sheets.local.json','/product-costs.local.json','/.env','/../server.js','/%2e%2e%2fserver.js'])assert.equal((await fetch(base+route,{headers})).status,404);
     assert.equal((await post('/api/sheets/upsert',{}, {...headers,origin:'https://outro.example'})).status,403);

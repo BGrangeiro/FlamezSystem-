@@ -260,6 +260,19 @@ export function renderProduction(ctx) {
       });
       else Object.entries(row.data).filter(([,v])=>v).forEach(([label,value]) => grid.append(cell(label,value)));
       panel.append(grid);
+      let cloudEvents = []; try { cloudEvents = JSON.parse(row.data._bambuEvents || '[]'); } catch {}
+      if (row.data._bambuSyncError) panel.append(node('p', 'production-cloud-warning', row.data._bambuSyncError));
+      if (cloudEvents.length) {
+        const history = node('details', 'production-cloud-events');
+        history.append(node('summary', '', `Ocorrências da impressora · ${cloudEvents.length}`));
+        for (const entry of cloudEvents.slice().reverse()) {
+          const line = node('div', 'production-cloud-event');
+          const date = new Date(entry.at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+          line.append(node('time', '', date), node('span', '', entry.message)); history.append(line);
+        }
+        history.append(node('small', '', 'Horário de recebimento no sistema · Brasília'));
+        panel.append(history);
+      }
       if (row.data.Observações) panel.append(node('p','machine-formula',row.data.Observações));
       const actions = node('div','production-record-actions');
       actions.append(button('Fazer alterações',()=>{state.editingProduction.add(key);render();}));
@@ -273,6 +286,7 @@ export function renderProduction(ctx) {
     const statusLabel = node('label','field'); statusLabel.append(node('span','','Status da produção'));
     const status = node('select'); PRODUCTION_STATUSES.forEach(value=>status.append(new Option(value,value))); status.value=savedStatus; statusLabel.append(status);
     form.append(day.wrap,statusLabel);
+    form.append(node('p', 'machine-formula', 'Ao selecionar uma máquina Bambu, esta produção acompanha a impressão atual ou a próxima impressão iniciada. A conclusão confirmada pela impressora atualiza o status automaticamente.'));
     if (items) items = items.map(productionDraftItem);
     if (!items && !draft) form.append(node('p','machine-formula','Registro antigo: selecione os produtos e quantidades para calcular o consumo. Os dados anteriores serão preservados.'));
     const list=node('div','production-items'); form.append(list);
