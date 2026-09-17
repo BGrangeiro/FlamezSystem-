@@ -1,8 +1,23 @@
+import {presetValues} from './production-presets.js';
 import {createFilamentPicker} from './filament-picker.js';
 import { filamentName } from './filament-stock.js';
 import { showDailyReport } from './production-report.js';
 import { PRODUCTION_STATUSES, applyProductionOutcome, productionDraftItem } from './production-status.js';
 import { machineNumber, calculateMachineCost, normalizeMachineData } from './machine-costs.js';
+
+export function formatProductionHours(value) {
+  if (value == null || String(value).trim() === '') return '';
+  const hours = machineNumber(value);
+  return Number.isFinite(hours) ? hours.toFixed(2) : String(value);
+}
+function configureHoursInput(input) {
+  input.inputMode = 'decimal';
+  input.value = formatProductionHours(input.value);
+  input.addEventListener('blur', () => {
+    input.value = formatProductionHours(input.value);
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+}
 
 export function productionItem(product, cost, quantity, waste = '0') {
   const count = machineNumber(quantity);
@@ -37,6 +52,17 @@ export function manualProductionItem(data, machine) {
   const total = used / 1000 * price, machineCost = hours * rate;
   if (![total, machineCost].every(Number.isFinite)) throw new Error('Valores acima do limite permitido.');
   return { type: 'manual', name: data.name.trim(), sku: '', quantity: 1, used, waste: 0, total, gramsPerUnit: used, materials: [{name: 'Filamento', gramsPerUnit: used, kgPrice: price}], machineRow: machine.rowNumber, machineName: machine.data['Nome da máquina'], hours, machineRate: rate, machineCost };
+}
+
+export function resolveProductionDraftItem(snapshot, selectedProductRow, quantityValue, products) {
+  const quantity = Number(quantityValue);
+  if (!Number.isInteger(quantity) || quantity <= 0) throw new Error('Informe a quantidade de unidades.');
+  if (snapshot && String(selectedProductRow) === String(snapshot.productRow)) {
+    return {...snapshot, quantity, waste: 0};
+  }
+  const product = products.find(row => String(row.rowNumber) === String(selectedProductRow));
+  if (!product) throw new Error('Selecione um produto.');
+  return {productRow: product.rowNumber, name: product.data.Produto, sku: product.data.SKU || '', quantity};
 }
 
 export function dailySkuTotals(items) {
@@ -144,24 +170,28 @@ export function renderProduction(ctx) {
     const draft = row.rowNumber === null, key = `production:${row.rowNumber}`;
     let items = null;
     try { const parsed = JSON.parse(row.data['Itens da produção']); if (Array.isArray(parsed)) items = parsed; } catch {}
-    const panel = node('section', 'product-details order-details production-record');
-    panel.append(node('h3', '', draft ? 'Nova produção' : `Produção ${index + 1}`));
+    const automatic = row.data._bambuAutomatic === 'true';
+    const panel = node('section', `product-details order-details production-record${automatic ? ' production-record-automatic' : ''}`);
+    const recordHeading = node('div', 'production-record-heading');
+    recordHeading.append(node('h3', '', draft ? 'Nova produção' : `Produção ${index + 1}`));
+    if (automatic) recordHeading.append(node('span', 'production-automatic-badge', 'Registro automático'));
+    panel.append(recordHeading);
     dayPanel.append(panel);
     const savedStatus = row.data['Status da produção'] || (draft ? 'Em produção' : 'Concluída');
     if (draft || state.editingProduction.has(key)) panel.append(node('span', `order-status ${savedStatus === 'Concluída' ? 'done' : savedStatus === 'Falhou' ? 'stopped' : 'progress'}`, savedStatus));
     if (!draft && !state.editingProduction.has(key)) {
       const grid = node('div','order-info-grid');
       if (items) items.forEach(item => {
-        const detail = node('div','order-info-item production-detail-card');
+        const detail = node('div',`order-info-item production-detail-card${item.automatic ? ' production-detail-automatic' : ''}`);
         const body = node('div','production-detail-body');
         const titleRow = node('div','production-title-row');
         titleRow.append(node('h4','production-item-title',item.name || item.sku || 'Produção sem nome'));
         if(item.sku) titleRow.append(node('strong','production-detail-sku',item.sku));
         body.append(titleRow);
         const materials = Array.isArray(item.materials) ? item.materials : [];
-        const filamentName = item.filamentLabel || materials.map(m=>m.name).filter(Boolean).join(' + ') || 'Filamento não informado';
-        const filament = [filamentName,item.filamentColor].filter(Boolean).join(' · ');
-        body.append(node('p','production-detail-quantity',`${num(item.quantity,0)} un · ${filament} · ${num(item.used + item.waste)} g`));
+        const filamentLabel = item.filamentLabel || materials.map(m=>m.name).filter(Boolean).join(' + ') || 'Filamento não informado';
+        const filament = [filamentLabel,item.filamentColor].filter(Boolean).join(' · ');
+        body.append(node('p','production-detail-quantity',item.automatic && !(Number(item.plannedUsed) > 0) ? `${savedStatus === 'Falhou' ? 'Quantidade, filamento e desperdício pendentes' : 'Quantidade e filamento pendentes'} · complete os dados` : `${num(item.quantity,0)} un · ${filament} · ${num(item.used + item.waste)} g`));
         const statusArea = node('div','production-quick-status');
         const statusTone = value => value === 'Concluída' ? 'success' : value === 'Parcial' ? 'partial' : value === 'Falhou' ? 'failed' : 'pending';
         const dropdown = node('div','production-status-dropdown');
@@ -186,7 +216,7 @@ export function renderProduction(ctx) {
           if(event.key === 'ArrowDown' && event.target === trigger) {event.preventDefault();choices.hidden = false;trigger.setAttribute('aria-expanded','true');choices.querySelector('button')?.focus();}
         });
         dropdown.append(trigger,choices); statusArea.append(dropdown);
-        if(savedStatus === 'Falhou') {
+        if(savedStatus === 'Falhou' && !(item.automatic && !(Number(item.plannedUsed) > 0))) {
           const adjust = button('Ajustar',()=>openStatusEditor('Falhou',adjust,true),'production-adjust-hours');
           statusArea.append(adjust);
         }
@@ -206,15 +236,21 @@ export function renderProduction(ctx) {
             try {
               const changed = items.map((original,i)=>{
                 const entry = entries[i] || {};
-                return {...original,...(entry.waste ? {waste:entry.waste.value} : {}),...(select.value === 'Falhou' ? {failureWaste:entry.failureWaste ? entry.failureWaste.value : original.plannedUsed ?? original.used} : {}),...(entry.failure ? {failureHours:entry.failure.value} : select.value === 'Falhou' ? {failureHours:original.plannedHours ?? original.hours ?? 0} : {}),...(entry.hours ? {plannedHours:entry.hours.value} : {})};
+                const stock = entry.stock ? state.productionFilaments.find(f=>String(f.rowNumber)===entry.stock.value) : null;
+                if (entry.stock && !stock) throw new Error('Selecione o filamento utilizado para registrar a baixa no estoque.');
+                const actualWaste = entry.failureWaste ? machineNumber(entry.failureWaste.value) : 0;
+                const weight = Math.max(Number(original.plannedUsed ?? original.used)||0, actualWaste);
+                const material = stock ? {filamentStockRow:stock.rowNumber,filamentBrand:stock.data.Marca,filamentColor:stock.data.Cor,filamentLabel:filamentName(stock),plannedUsed:weight,plannedFilamentTotal:weight / 1000 * machineNumber(stock.data['Custo médio por kg'])} : {};
+                return {...original,...material,...(entry.waste ? {waste:entry.waste.value} : {}),...(select.value === 'Falhou' ? {failureWaste:entry.failureWaste ? entry.failureWaste.value : original.plannedUsed ?? original.used} : {}),...(entry.failure ? {failureHours:entry.failure.value} : select.value === 'Falhou' ? {failureHours:original.plannedHours ?? original.hours ?? 0} : {}),...(entry.hours ? {plannedHours:entry.hours.value} : {})};
               });
               const next = applyProductionOutcome(changed,select.value), totals = productionTotals(next);
               select.disabled = true; cancel.disabled = true; panel.dataset.statusSaving = 'true';
               panel.querySelectorAll('.production-status-button').forEach(b=>b.disabled = true);
               await saveRow('producao',row.rowNumber,{...row.data,'Status da produção':select.value,'Itens da produção':JSON.stringify(next),'Desperdício (g)':String(totals.waste),'Peso (g)':String(totals.used+totals.waste),'Custo do filamento (R$)':String(totals.total),'Custo de máquinas (R$)':String(totals.machineCost)},save);
               // A falha de gravação é apresentada pelo saveRow; mantenha a opção de tentar novamente.
-              if(quick.isConnected) {panel.dataset.statusSaving = 'false';select.disabled = false;cancel.disabled = false;save.hidden = false;panel.querySelectorAll('.production-status-button').forEach(b=>b.disabled = false);}
+              if(quick.isConnected) {error.textContent = 'Não foi possível salvar. Confira a mensagem no topo da página e tente novamente.';panel.dataset.statusSaving = 'false';select.disabled = false;cancel.disabled = false;save.hidden = false;panel.querySelectorAll('.production-status-button').forEach(b=>b.disabled = false);}
             } catch(e) { error.textContent = e.message; }
+            finally { if (quick.isConnected) { panel.dataset.statusSaving = 'false'; select.disabled = false; cancel.disabled = false; save.disabled = false; save.hidden = false; panel.querySelectorAll('.production-status-button').forEach(b=>b.disabled = false); } }
           }
           const prepare = () => {
             fields.replaceChildren(); error.textContent = ''; entries = []; save.hidden = true;
@@ -223,12 +259,14 @@ export function renderProduction(ctx) {
               const entry = {}; entries.push(entry);
               const group = node('div','production-status-item');
               const add = (key,title,value) => {
-                const wrap = node('label','field',title); const input = node('input'); input.type = 'text'; input.inputMode = 'decimal'; input.required = true; input.value = value; entry[key] = input; wrap.append(input); group.append(wrap);
+                const wrap = node('label','field',title); const input = node('input'); input.type = 'text'; input.inputMode = 'decimal'; input.required = true; input.value = value; if (key === 'hours' || key === 'failure') configureHoursInput(input); entry[key] = input; wrap.append(input); group.append(wrap);
               };
               if(select.value === 'Parcial') add('waste',`Filamento descartado (g) · máximo ${num(original.plannedUsed ?? original.used)} g`,savedStatus === 'Parcial' ? original.waste : '');
-              if(select.value === 'Falhou' && adjustHours) {
+              if(select.value === 'Falhou') {
+                const picker = createFilamentPicker(state.productionFilaments || [], original.filamentStockRow);
+                entry.stock = picker.input; group.append(picker.wrap);
                 add('failure','Horas gastas até interromper (h)',original.failureHours ?? original.hours ?? '');
-                add('failureWaste',`Filamento desperdiçado (g) · máximo ${num(original.plannedUsed ?? original.used)} g`,original.failureWaste ?? original.waste);
+                add('failureWaste','Filamento realmente desperdiçado (g)',savedStatus === 'Falhou' ? original.failureWaste ?? original.waste : '');
               }
               if(['Concluída','Parcial'].includes(select.value) && original.machineRow && !(Number(original.plannedHours ?? original.hours) > 0)) add('hours','Tempo total na máquina (h)','');
               if(group.children.length) {group.prepend(node('strong','',original.name || original.sku || 'Produção'));fields.append(group);}
@@ -252,7 +290,9 @@ export function renderProduction(ctx) {
           const kg = unitGrams > 0 ? totalGrams * Number(m.gramsPerUnit) / unitGrams / 1000 : 0;
           calculation.append(node('p','',`${materials.length === 1 ? filament : m.name || 'Filamento'}: ${num(kg,4)} kg × ${money(m.kgPrice)}/kg = ${money(kg * Number(m.kgPrice))}`));
         });
-        if(item.machineRow != null) calculation.append(node('p','',`Máquina ${item.machineName || item.machineRow}: ${num(item.hours)} h${item.machineRate == null ? ' · custo por hora não informado' : ` × ${money(item.machineRate)}/h = ${money(machineCost)}`}`));
+        if(item.automatic && !materials.length) calculation.append(node('p','production-automatic-pending','Filamento, quantidade e desperdício aguardam preenchimento.'));
+        const displayedHours = item.automatic && savedStatus === 'Em produção' ? item.plannedHours : item.hours;
+        if(item.machineRow != null) calculation.append(node('p','',`Máquina ${item.machineName || item.machineRow}: ${num(displayedHours)} h${item.machineRate == null ? ' · custo por hora não informado' : ` × ${money(item.machineRate)}/h = ${money(machineCost)}`}`));
         calculation.append(node('p','',`${money(materialCost)} de filamento + ${money(machineCost)} de máquina = ${money(materialCost + machineCost)}`));
         calculation.append(node('p','',`Desperdício: ${num(item.waste)} g`));
         detail.append(body,calculation,statusArea);
@@ -275,11 +315,12 @@ export function renderProduction(ctx) {
       }
       if (row.data.Observações) panel.append(node('p','machine-formula',row.data.Observações));
       const actions = node('div','production-record-actions');
-      actions.append(button('Fazer alterações',()=>{state.editingProduction.add(key);render();}));
+      actions.append(button(automatic ? 'Completar dados' : 'Fazer alterações',()=>{state.editingProduction.add(key);render();}));
       panel.append(actions);
       return;
     }
     const form = node('form','production-form');
+    form.noValidate = true;
     const field = (label, type, value) => { const wrap=node('label','field');wrap.append(node('span','',label)); const input=node('input'); input.type=type; input.value=value; wrap.append(input);return {wrap,input}; };
     const day=field('Data da produção','date',row.data['Dia produção'] || todayInputValue());day.input.required=true;
     const notes=field('Observações','text',row.data.Observações || '');
@@ -292,16 +333,11 @@ export function renderProduction(ctx) {
     const list=node('div','production-items'); form.append(list);
     const entries=[];
     const output=node('div','machine-result');
+    output.setAttribute('role','status');
+    output.setAttribute('aria-live','polite');
     const readEntry = entry => {
       if (entry.read) return entry.read();
-      let item;
-      if (entry.snapshot && entry.select.value === String(entry.snapshot.productRow) && entry.quantity.value === String(entry.snapshot.quantity)) item = {...entry.snapshot, waste: 0};
-      else {
-        const product=state.productionProducts.find(p=>String(p.rowNumber)===entry.select.value);
-        if (!product) throw new Error('Selecione um produto.');
-        const quantity=Number(entry.quantity.value);if(!Number.isInteger(quantity)||quantity<=0) throw new Error('Informe a quantidade de unidades.');
-        item = {productRow:product.rowNumber,name:product.data.Produto,sku:product.data.SKU||'',quantity};
-      }
+      const item = resolveProductionDraftItem(entry.snapshot, entry.select.value, entry.quantity.value, state.productionProducts);
       const machineId = entry.machine.value;
       const hours = machineNumber(entry.hours.value || '0');
       if (!Number.isFinite(hours) || hours < 0) throw new Error('Informe um tempo válido em horas.');
@@ -318,7 +354,7 @@ export function renderProduction(ctx) {
     };
     const outcomeFields = (entry, snapshot) => {
       const waste = field('Filamento descartado (g)','text',snapshot?.waste ?? '0'); waste.input.inputMode='decimal';
-      const failure = field('Horas gastas até interromper (h)','text',snapshot?.failureHours ?? ''); failure.input.inputMode='decimal';
+      const failure = field('Horas gastas até interromper (h)','text',snapshot?.failureHours ?? ''); configureHoursInput(failure.input);
       entry.waste = waste.input; entry.wasteWrap = waste.wrap; entry.failure = failure.input; entry.failureWrap = failure.wrap;
       const picker=createFilamentPicker(state.productionFilaments||[],snapshot?.filamentStockRow);
       const stockLabel=picker.wrap;entry.stock=picker.input;
@@ -333,8 +369,9 @@ export function renderProduction(ctx) {
       if(!stock || !stock.data.Marca?.trim() || !stock.data.Cor?.trim()) throw new Error('Selecione um filamento do estoque com marca e cor preenchidas.');
       const grams=machineNumber(entry.stockGrams.value),price=machineNumber(stock.data['Custo médio por kg']);
       if(!Number.isFinite(grams)||grams<=0||!Number.isFinite(price)||price<0) throw new Error('Informe gramas maiores que zero e um custo por kg válido no estoque.');
+      if(entry.preset && !entry.preset.value) throw new Error('Selecione um SKU padronizado.');
       const item=readEntry(entry),quantity=item.quantity||1;
-      return {...item,used:grams,plannedUsed:grams,total:grams/1000*price,plannedFilamentTotal:grams/1000*price,
+      return {...item,productionPresetRow:entry.preset?.value||'',productionPresetCode:entry.presetCode||'',used:grams,plannedUsed:grams,total:grams/1000*price,plannedFilamentTotal:grams/1000*price,
         filamentStockRow:stock.rowNumber,filamentBrand:stock.data.Marca,filamentLabel:filamentName(stock),filamentColor:stock.data.Cor,
         gramsPerUnit:grams/quantity,materials:[{name:filamentName(stock),gramsPerUnit:grams/quantity,kgPrice:price}],
         waste:status.value==='Parcial'?entry.waste.value:0,failureHours:entry.failure.value||entry.hours.value||'0',failureWaste:entry.failureWaste.value.trim()||undefined};
@@ -364,9 +401,34 @@ export function renderProduction(ctx) {
       state.productionMachines.forEach(m=>machine.append(new Option(m.data['Nome da máquina'] || 'Sem nome',String(m.rowNumber))));
       if(snapshot?.machineRow != null && !state.productionMachines.some(m=>String(m.rowNumber)===String(snapshot.machineRow))) machine.append(new Option(`${snapshot.machineName} (arquivada)`,String(snapshot.machineRow)));
       machine.value = snapshot?.machineRow == null ? '' : String(snapshot.machineRow); machineLabel.append(machine);
-      const hours = field('Tempo total na máquina (h)','text',snapshot?.hours ?? ''); hours.input.inputMode='decimal'; hours.input.placeholder='Ex.: 13 ou 1,5';
+      const hours = field('Tempo total na máquina (h)','text',snapshot?.hours ?? ''); configureHoursInput(hours.input); hours.input.placeholder='Ex.: 13.00 ou 1.50';
       const entry={select,quantity:quantity.input,snapshot,wrap,machine,hours:hours.input}; outcomeFields(entry,snapshot); entries.push(entry);
-      wrap.append(label,quantity.wrap,machineLabel,hours.wrap,button('Remover',()=>{if(!draft && snapshot) {removeProductionItem(row.rowNumber,items.indexOf(snapshot));return;}entries.splice(entries.indexOf(entry),1);wrap.remove();refresh();},'danger-button'));
+      const presetLabel=node('label','field');presetLabel.append(node('span','','SKU padronizado'));
+      const presetSelect=node('select');presetSelect.append(new Option('Selecione um padrão',''));
+      const available=(state.productionPresets||[]).filter(p=>state.productionProducts.some(product=>String(product.rowNumber)===String(p.data['Produto ID'])));
+      for(const preset of available)presetSelect.append(new Option(`${preset.data.Código} · ${preset.data.Produto} · ${preset.data.Quantidade} un · ${preset.data.Horas} h`,String(preset.rowNumber)));
+      presetLabel.append(presetSelect);presetLabel.hidden=true;
+      const sources=node('div','product-section-tabs');
+      const normal=button('Produto / SKU',()=>source(false),'product-section-tab active');
+      const standardized=button('SKU padronizado',()=>source(true),'product-section-tab');
+      normal.setAttribute('aria-pressed','true');standardized.setAttribute('aria-pressed','false');
+      sources.append(normal,standardized);
+      function source(usePreset){
+        label.hidden=usePreset;presetLabel.hidden=!usePreset;presetSelect.required=usePreset;select.required=!usePreset;
+        normal.classList.toggle('active',!usePreset);standardized.classList.toggle('active',usePreset);
+        normal.setAttribute('aria-pressed',String(!usePreset));standardized.setAttribute('aria-pressed',String(usePreset));
+        entry.preset=usePreset?presetSelect:null;
+        if(!usePreset){entry.presetCode='';presetSelect.value='';}
+      }
+      presetSelect.onchange=()=>{
+        const preset=available.find(p=>String(p.rowNumber)===presetSelect.value);entry.presetCode=preset?.data.Código||'';
+        if(preset){const values=presetValues(preset);select.value=values.productId;quantity.input.value=values.quantity;hours.input.value=values.hours;}
+        refresh();
+      };
+      if(snapshot?.productionPresetRow){presetSelect.value=String(snapshot.productionPresetRow);if(presetSelect.value){source(true);entry.presetCode=snapshot.productionPresetCode||'';}}
+      wrap.prepend(sources,label,presetLabel);
+
+      wrap.append(quantity.wrap,machineLabel,hours.wrap,button('Remover',()=>{if(!draft && snapshot) {removeProductionItem(row.rowNumber,items.indexOf(snapshot));return;}entries.splice(entries.indexOf(entry),1);wrap.remove();refresh();},'danger-button'));
       wrap.addEventListener('input',refresh);list.append(wrap);refresh();
     };
     const addManual = snapshot => {
@@ -375,7 +437,7 @@ export function renderProduction(ctx) {
       wrap.append(node('h4','','Produção avulsa / protótipo'));
       const name = field('Nome do que foi produzido','text',snapshot?.name || ''); name.input.required = true;
       const hours = field('Tempo de uso da máquina (h)','text',snapshot?.hours ?? '');
-      [hours].forEach(f => {f.input.inputMode='decimal';f.input.required=true;});
+      configureHoursInput(hours.input); hours.input.required=true;
       const label=node('label','field'); label.append(node('span','','Máquina utilizada'));
       const select=node('select'); select.required=true; select.append(new Option('Selecione uma máquina',''));
       state.productionMachines.forEach(machine=>select.append(new Option(machine.data['Nome da máquina'] || 'Sem nome',String(machine.rowNumber))));
@@ -395,6 +457,7 @@ export function renderProduction(ctx) {
     if(!draft) actions.append(button('Remover produção',()=>deleteRow('producao',row.rowNumber),'danger-button'));
     const save=node('button','primary-button',draft?'Salvar produção':'Salvar alterações');save.type='submit'; actions.append(save);form.append(actions);
     form.addEventListener('submit',async event=>{event.preventDefault();try {
+      if (!day.input.value) throw new Error('Informe a data da produção.');
       if(!entries.length) throw new Error('Adicione pelo menos um produto.');
       const next=readOutcomes(), t=productionTotals(next);
       state.expanded.add(`production-day:${day.input.value}`);

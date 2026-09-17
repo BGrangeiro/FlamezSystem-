@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { registerCloudMachines, bindProduction, recordCloudReport, completeCloudProductions } from '../lib/bambu-automation.js';
+import { registerCloudMachines, bindProduction, recordCloudReport, completeCloudProductions, identifyCloudProduct } from '../lib/bambu-automation.js';
 import { updateMachineHours } from '../public/machine-costs.js';
 import { reconcileFilamentStock } from '../public/filament-stock.js';
 import { mergeReport } from '../lib/bambu-cloud.js';
 import { applyProductionOutcome } from '../public/production-status.js';
 
-const make = () => ({ maquinas: { rows: [{ rowNumber: 2, data: { 'Nome da máquina': '01', 'Horas iniciais (h)': '100', 'Valor de aquisição': '5000' } }] }, producao: { rows: [] }, filamentos: { rows: [{ rowNumber: 2, data: { Marca: 'Test', Cor: 'Branco', 'Estoque atual (kg)': '1' } }] }, filamentLog: { rows: [] } });
-const device = { id: 'printer1', name: '01', model: 'A1', jobId: 'job1', state: 'RUNNING' };
+const make = () => ({ maquinas: { rows: [{ rowNumber: 2, data: { 'Nome da máquina': '01', 'Horas iniciais (h)': '100', 'Valor de aquisição': '5000' } }] }, produtos: { rows: [{rowNumber:2,data:{SKU:'A01',Produto:'Gancho Quadrado'}}] }, producao: { rows: [] }, filamentos: { rows: [{ rowNumber: 2, data: { Marca: 'Test', Cor: 'Branco', 'Estoque atual (kg)': '1' } }] }, filamentLog: { rows: [] } });
+const device = { id: 'printer1', name: '01', model: 'A1', jobId: 'job1', jobName: 'A01(02).3mf', state: 'RUNNING' };
 const production = number => ({ rowNumber: number, data: { 'Status da produção': 'Em produção', 'Itens da produção': JSON.stringify([{ machineRow: 2, filamentStockRow: 2, quantity: 2, plannedUsed: 300, plannedFilamentTotal: 15, plannedHours: 13, used: 300, waste: 0, total: 15, hours: 0, machineRate: 2 }]) } });
 
 test('cloud discovery preserves existing finance and uniquely links names without duplicates', () => {
@@ -16,6 +16,26 @@ test('cloud discovery preserves existing finance and uniquely links names withou
   assert.equal(s.maquinas.rows[0].data['Valor de aquisição'], '5000');
   registerCloudMachines(s, [{ ...device, id: 'printer2', name: '02' }]);
   assert.equal(s.maquinas.rows[1].data['Valor de aquisição'], '');
+});
+
+test('automatic cloud production is created on start, records errors and finishes with observed time', () => {
+  const s = make(); registerCloudMachines(s, [device]);
+  assert.equal(identifyCloudProduct(s, 'A01(02).3mf').sku, 'A01');
+  recordCloudReport(s, { ...device, updatedAt: 1000 });
+  assert.equal(s.producao.rows.length, 1);
+  const automatic = s.producao.rows[0];
+  assert.equal(automatic.data._bambuAutomatic, 'true');
+  assert.equal(automatic.data['Código do produto'], 'A01');
+  assert.equal(automatic.data['Status da produção'], 'Em produção');
+  recordCloudReport(s, { ...device, alerts:['Erro Bambu DEADBEEF'], updatedAt: 61000 }, true);
+  assert.match(automatic.data.Observações, /Erro Bambu DEADBEEF/);
+  assert.equal(JSON.parse(automatic.data._bambuEvents).length, 1);
+  recordCloudReport(s, { ...device, state:'FINISH', progress:100, updatedAt:121000 }, true);
+  assert.equal(automatic.data['Status da produção'], 'Concluída');
+  assert.equal(automatic.data['Horas (h)'], String(2/60));
+  assert.ok(automatic.data['Hora de finalização']);
+  const ledger = JSON.parse(s.maquinas.rows[0].data._bambuJobs);
+  assert.equal(Object.values(ledger)[0].name, 'A01(02).3mf');
 });
 
 test('finished job counts physical hours once, completes bound production and deducts stock once', () => {
@@ -94,4 +114,47 @@ test('FAILED records actual observed hours and defaults to full waste; a later w
   reconcileFilamentStock(failed, s); updateMachineHours(s);
   assert.equal(Number(s.filamentos.rows[0].data['Estoque atual (kg)']), .96);
   assert.equal(s.maquinas.rows[0].data['Horas totais (h)'], failed.maquinas.rows[0].data['Horas totais (h)']);
+});
+
+test('manual failed outcome and waste survive subsequent cloud finish reports', () => {
+  const s = make(); registerCloudMachines(s, [device]);
+  recordCloudReport(s, {...device,updatedAt:1000});
+  recordCloudReport(s, {...device,state:'FINISH',updatedAt:61000},true);
+  const previous = structuredClone(s.producao.rows[0]);
+  const row = s.producao.rows[0];
+  const items = applyProductionOutcome([{...JSON.parse(row.data['Itens da produção'])[0],plannedUsed:100,plannedFilamentTotal:10,failureWaste:25,failureHours:0.01}], 'Falhou');
+  row.data['Status da produção'] = 'Falhou';
+  row.data['Itens da produção'] = JSON.stringify(items);
+  row.data['Desperdício (g)'] = '25';
+  bindProduction(s,row,previous,62000);
+  recordCloudReport(s,{...device,state:'FINISH',updatedAt:121000},true);
+  assert.equal(row.data['Status da produção'],'Falhou');
+  assert.equal(row.data['Desperdício (g)'],'25');
+  assert.deepEqual(JSON.parse(row.data['Itens da produção']),items);
+  recordCloudReport(s,{...device,jobId:'job2',updatedAt:181000},true);
+  assert.equal(s.producao.rows.length,2);
+  assert.equal(s.producao.rows[1].data['Status da produção'],'Em produção');
+});
+
+test('automatic finalization is immutable on repeated reports and after restart', () => {
+  let s=make();registerCloudMachines(s,[device]);
+  recordCloudReport(s,{...device,updatedAt:1000});
+  recordCloudReport(s,{...device,state:'FINISH',updatedAt:61000},true);
+  const frozen=structuredClone(s.producao.rows[0].data);
+  s=JSON.parse(JSON.stringify(s));
+  recordCloudReport(s,{...device,state:'FINISH',updatedAt:71000},true);
+  recordCloudReport(s,{...device,state:'FAILED',updatedAt:81000},true);
+  assert.deepEqual(s.producao.rows[0].data,frozen);
+});
+test('manual reopening cannot be completed again by old cloud reports or ledger', () => {
+  const s=make();registerCloudMachines(s,[device]);
+  recordCloudReport(s,{...device,updatedAt:1000});
+  recordCloudReport(s,{...device,state:'FINISH',updatedAt:61000},true);
+  const row=s.producao.rows[0],previous=structuredClone(row);
+  row.data['Status da produção']='Em produção';
+  bindProduction(s,row,previous,62000);
+  recordCloudReport(s,{...device,state:'FINISH',updatedAt:71000},true);
+  assert.deepEqual(completeCloudProductions(s),[]);
+  assert.equal(row.data['Status da produção'],'Em produção');
+  assert.equal(row.data._bambuManualOutcome,'true');
 });

@@ -29,7 +29,15 @@ test('telemetria parcial preserva dados e troca de trabalho remove valores anter
   assert.equal(second.progress, 42); assert.equal(second.remainingMinutes, 90);
   const third = mergeReport(second, { print: { subtask_id: '2', gcode_state: 'PREPARE', mc_percent: -1 } }, 300);
   assert.equal(third.progress, null); assert.equal(third.remainingMinutes, null);
-  assert.equal(mergeReport(third, { print: { nozzle_temper: 220 } }, 400).updatedAt, 300);
+  const telemetry = mergeReport(third, { print: { nozzle_temper: 220, nozzle_target_temper: '225', bed_temper: 60.5, bed_target_temper: 65, layer_num: 12, total_layer_num: 90, mc_print_stage: 4, spd_lvl: 2, wifi_signal: '-61', cooling_fan_speed: '10', tray_now: '1', ams: [{id:'0',humidity:'4',temp:'29',tray:[{id:'1',tray_type:'PLA',tray_color:'FFFFFFFF',remain:73}]}] } }, 400);
+  assert.equal(telemetry.updatedAt, 400);
+  assert.deepEqual(telemetry.telemetry.temperatures, {nozzle:220,nozzleTarget:225,bed:60.5,bedTarget:65});
+  assert.equal(telemetry.telemetry.currentLayer,12);assert.equal(telemetry.telemetry.totalLayers,90);
+  assert.equal(telemetry.telemetry.stage,4);assert.equal(telemetry.telemetry.speedLevel,2);assert.equal(telemetry.telemetry.wifiSignal,-61);
+  assert.equal(telemetry.telemetry.fans.part,10);assert.equal(telemetry.telemetry.ams[0].trays[0].remaining,73);
+  const invalid=mergeReport(telemetry,{print:{nozzle_temper:9999,layer_num:-1,ams:[{tray:[{tray_type:'x'.repeat(200)}]}]}},500);
+  assert.equal(invalid.telemetry.temperatures.nozzle,220);assert.equal(invalid.telemetry.currentLayer,12);
+  assert.equal(invalid.telemetry.ams[0].trays[0].type.length,80);
 });
 
 test('conexão Bambu recebe somente relatórios, protege credenciais e expira dados', async () => {

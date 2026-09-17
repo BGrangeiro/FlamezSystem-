@@ -8,7 +8,7 @@ export function applyProductionOutcome(items, status) {
     const plannedHours = machineNumber(item.plannedHours ?? item.hours ?? 0);
     if (![weight, baseCost, plannedHours].every(Number.isFinite) || weight < 0 || baseCost < 0 || plannedHours < 0) throw new Error('Dados da produção inválidos.');
     const waste = status === 'Falhou' ? machineNumber(item.failureWaste ?? weight) : status === 'Parcial' ? machineNumber(item.waste) : 0;
-    if (!Number.isFinite(waste) || waste < 0 || waste > weight) throw new Error('O desperdício deve estar entre zero e o filamento previsto do item.');
+    if (!Number.isFinite(waste) || waste < 0 || (status !== 'Falhou' && waste > weight)) throw new Error(status === 'Falhou' ? 'Informe o filamento realmente desperdiçado em gramas, maior ou igual a zero.' : 'O desperdício deve estar entre zero e o filamento previsto do item.');
     const hours = status === 'Em produção' ? 0 : status === 'Falhou' ? machineNumber(item.failureHours) : plannedHours;
     if (!Number.isFinite(hours) || hours < 0) throw new Error('Informe as horas realmente gastas até interromper a impressão.');
     if (!item.machineRow && hours > 0) throw new Error('Selecione a máquina utilizada.');

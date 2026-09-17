@@ -1,3 +1,5 @@
+import {normalizePreset, PRESET_HEADERS} from './public/production-presets.js';
+import { normalizeMaterial } from './public/material-stock.js';
 import { normalizeProductStock } from './public/product-stock-data.js';
 import { addDelivery, deliveryTotals } from './public/order-deliveries.js';
 import { EXPENSE_HEADERS, normalizeExpense } from './lib/company-expenses.js';
@@ -63,6 +65,8 @@ const mimeTypes = {
 };
 
 const DEFAULT_LOCAL_SHEETS = {
+  productionPresets: {sheet:'productionPresets',sheetName:'SKU padronizado',headers:PRESET_HEADERS,rows:[]},
+  materialStock: {sheet:'materialStock',sheetName:'Estoque de materiais',headers:['Material','Quantidade','Unidade','Observações','Foto','Link de compra'],rows:[]},
   companyExpenses: {sheet: 'companyExpenses', sheetName: 'Custos da empresa', headers: EXPENSE_HEADERS, rows: []},
   filamentLog: {sheet:'filamentLog',sheetName:'Log de filamentos',headers:['Data','Dia da produção','Produção','Filamento','Movimento','Quantidade (g)','Saldo (kg)','Status'],rows:[]},
   productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade','Cores','Foto'],rows:[]},
@@ -268,6 +272,8 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     throw error;
   }
 
+  if(sheetKey === 'productionPresets') rowData = normalizePreset(rowData,data.sheets.produtos.rows,sheet.rows,sheet.rows.find(row=>Number(row.rowNumber)===Number(rowNumber))?.data);
+  if(sheetKey === 'materialStock') rowData = normalizeMaterial(rowData);
   if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
   if(sheetKey === 'companyExpenses') rowData = normalizeExpense(rowData, sheet.rows.find(row => Number(row.rowNumber) === Number(rowNumber))?.data);
   if(sheetKey === 'filamentos') {
@@ -439,6 +445,7 @@ async function deleteLocalRow(sheetKey, rowNumber, password) {
     error.statusCode = 404;
     throw error;
   }
+
 
   if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
   if(sheetKey === 'filamentos' && data.sheets.producao.rows.some(r=>JSON.parse(r.data['Itens da produção']||'[]').some(i=>String(i.filamentStockRow)===String(rowNumber)))) throw Object.assign(new Error('Este filamento está vinculado a uma produção e não pode ser excluído.'),{statusCode:400});

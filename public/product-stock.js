@@ -2,16 +2,35 @@ import {prepareFilamentPhoto} from './filament-settings.js';
 import {stockColors,normalizeProductStock} from './product-stock-data.js';
 const el=(tag,cls='',text='')=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
 const button=(text,action,cls='ghost-light-button')=>{const n=el('button',cls,text);n.type='button';n.onclick=action;return n;};
-export function renderProductStock({state,elements,saveRow,setStatus}) {
+export function renderProductStock(ctx) {
+  const {state,elements,saveRow,setStatus}=ctx;
+  state.editingProductStock ??= new Set();
+  const redraw=()=>renderProductStock(ctx);
   elements.content.replaceChildren();
   const grid=el('div','product-stock-grid'),products=new Map();
   const term=elements.searchInput.value.trim().toLocaleLowerCase();
   for(const product of state.stockProducts||[]){const sku=String(product.data.SKU||'').trim();if(sku&&!products.has(sku))products.set(sku,product.data.Produto||sku);}
-  elements.content.append(el('p','machine-formula','Abra a seta para informar o estoque por cor. O total é a soma das cores. Fotos e quantidades são gravadas em Salvar estoque.'));
+  elements.content.append(el('p','machine-formula','Consulte fotos e quantidades por cor. Clique em Fazer alterações para editar e em Salvar estoque para confirmar.'));
   for(const [sku,name] of products){
     const existing=state.rows.find(row=>row.data.SKU===sku);
     if(term&&!`${sku} ${name} ${existing?.data.Cores||''}`.toLocaleLowerCase().includes(term))continue;
-    const form=el('form','product-stock-card');grid.append(form);
+    if(!state.editingProductStock.has(sku)) {
+      const card=el('article','product-stock-card product-stock-summary'),header=el('div','stock-card-heading'),identity=el('div');
+      identity.append(el('h3','',name),el('strong','stock-sku',sku));
+      if(existing?.data.Foto){const photo=el('img','material-stock-photo');photo.src=existing.data.Foto;photo.alt=`Foto de ${name}`;photo.loading='lazy';header.append(photo);}
+      else header.append(el('div','material-stock-placeholder','Sem foto'));
+      header.append(identity);card.append(header);
+      try {
+        const colors=stockColors(existing?.data);
+        card.append(el('span','stock-quantity-label','Quantidade em estoque'),el('strong','stock-total-value',`${colors.reduce((sum,item)=>sum+Number(item.quantity),0).toLocaleString('pt-BR')} un`));
+        const list=el('dl','stock-info-list');
+        for(const item of colors){const line=el('div','stock-info-line');line.append(el('dt','',item.color),el('dd','',`${Number(item.quantity).toLocaleString('pt-BR')} un`));list.append(line);}
+        card.append(list);
+        if(!colors.length)card.append(el('p','stock-color-empty','Nenhuma quantidade cadastrada.'));
+      }catch{card.append(el('p','stock-feedback','Não foi possível ler as cores deste produto.'));}
+      card.append(button('Fazer alterações',()=>{state.editingProductStock.add(sku);redraw();},'primary-button'));grid.append(card);continue;
+    }
+    const form=el('form','product-stock-card product-stock-summary');grid.append(form);
     let colors;try{colors=stockColors(existing?.data);}catch{form.append(el('p','','Não foi possível ler as cores deste produto.'));continue;}
     const info=button('',()=>{
       if(popover.matches(':popover-open'))popover.hidePopover();
@@ -66,7 +85,8 @@ export function renderProductStock({state,elements,saveRow,setStatus}) {
     const save=el('button','primary-button','Salvar estoque');save.type='submit';
     const feedback=el('p','stock-feedback');feedback.setAttribute('role','status');
     upload.onchange=async()=>{if(!upload.files[0])return;processing=true;save.disabled=true;photoButton.disabled=true;feedback.textContent='Preparando foto…';try{photo=await prepareFilamentPhoto(upload.files[0]);updatePhoto();removePhoto.hidden=false;feedback.textContent='Foto pronta. Clique em Salvar estoque.';}catch(e){feedback.textContent=e.message;}finally{processing=false;save.disabled=false;photoButton.disabled=false;upload.value='';}};
-    form.append(header,upload,label,details,feedback,save);
+    form.append(header,upload,label,details,feedback,save,button('Cancelar',()=>{state.editingProductStock.delete(sku);redraw();}));
+    details.open=true;
     form.addEventListener('invalid',()=>{details.open=true;},true);
     form.onsubmit=async event=>{event.preventDefault();if(processing)return;
       try{

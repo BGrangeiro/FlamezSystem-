@@ -54,7 +54,7 @@ export function renderMonthlyPanel({state,elements,formatMoney:money,formatNumbe
   const success=s=>s.finished ? (s.finished-s.failed-s.partial)/s.finished*100 : 0;
   const root=el('div','month-dashboard');elements.content.replaceChildren(root);
   const hero=el('section','dash-hero');
-  const intro=el('div');intro.append(el('span','dash-eyebrow','FLAMEZ 3D / INTELIGÊNCIA DE PRODUÇÃO'),el('h2','','Visão do mês'),el('p','',`${monthName(month)} · ${isCurrent?'Acompanhamento até hoje':'Histórico de produção'}`));
+  const intro=el('div');intro.append(el('span','dash-eyebrow','FLAMEZ 3D / INTELIGÊNCIA DE PRODUÇÃO'),el('h2','','Sua produção em perspectiva.'),el('p','',`${monthName(month)} · ${isCurrent?'Acompanhamento até hoje':'Histórico de produção'}`));
   hero.append(intro,el('span','dash-hero-badge',`${stats.activeDays.size} ${stats.activeDays.size === 1 ? 'dia' : 'dias'} com produção finalizada`));root.append(hero);
   const filters=el('div','dash-filters');
   function monthField(title,value,action) {const label=el('label','dash-field',title);const input=el('input');input.type='month';input.value=value;input.max=current;input.addEventListener('change',()=>{if(input.value && input.value<=current)action(input.value);});label.append(input);return label;}
@@ -103,15 +103,81 @@ export function renderMonthlyPanel({state,elements,formatMoney:money,formatNumbe
   else outlook.append(el('p','dash-empty',isCurrent?'Registre uma produção finalizada para visualizar a projeção.':'Projeções disponíveis para o mês atual. Este período mostra resultados registrados.'));
   grid.append(outlook);
   function bars(section,values,format){const max=Math.max(1,...values.map(v=>v.value));for(const value of values){const row=el('div','dash-bar-row');const label=el('div','dash-bar-label');label.append(el('span','',value.label),el('strong','',format(value.value)));const track=el('div','dash-bar-track'),fill=el('div',`dash-bar-fill ${value.tone||''}`);fill.style.width=`${Math.max(0,value.value/max*100)}%`;track.append(fill);row.append(label,track);section.append(row);}if(!values.length)section.append(el('p','dash-empty','Nenhum registro neste período.'));}
-  const history=panel('Últimos seis meses','Custos registrados em cada mês; o mês atual pode estar incompleto.');
+  const history=panel('Últimos seis meses','Custos registrados em cada mês; o mês atual pode estar incompleto.','dash-history');
   bars(history,Array.from({length:6},(_,i)=>{const m=shiftMonth(month,i-5);return {label:monthName(m),value:total(monthlyStats(state.rows,m,m===current?limit:31)),tone:m===month?'':'muted'};}),money);grid.append(history);
-  const quality=panel('Qualidade da produção','Distribuição dos lotes e consumo de filamento.');
+  const quality=panel('Qualidade da produção','Distribuição dos lotes e consumo de filamento.','dash-quality');
   bars(quality,[{label:'Concluída',value:stats.finished-stats.failed-stats.partial,tone:'green'},{label:'Parcial',value:stats.partial,tone:'amber'},{label:'Falhou',value:stats.failed,tone:'red'},{label:'Em produção',value:stats.pending}],v=>num(v,0));
   quality.append(el('p','dash-caption',`Aproveitamento do filamento: ${num(stats.grams?(stats.grams-stats.waste)/stats.grams*100:0,1)}%. ${compare?`Desperdício no período comparado: ${num(rate(previous),1)}%.`:''}`));grid.append(quality);
-  const machines=panel('Desempenho das máquinas','Horas e custo de uso no período selecionado.');
-  for(const [id,machine] of [...stats.machines].sort((a,b)=>b[1].hours-a[1].hours)){const card=el('div','dash-machine');const name=state.productionMachines.find(m=>String(m.rowNumber)===id)?.data['Nome da máquina']||machine.name;card.append(el('strong','',`Máquina ${name}`),el('span','',`${num(machine.hours)} h · ${money(machine.cost)}`));if(compare)card.append(el('small','',`${delta(machine.hours,previous.machines.get(id)?.hours||0)} em horas`));machines.append(card);}
-  if(!stats.machines.size)machines.append(el('p','dash-empty','Sem horas de máquina registradas.'));grid.append(machines);
-  const maintenance=panel('Próximas manutenções','Situação atual das máquinas, independente do mês selecionado.');
-  for(const machine of state.productionMachines){const progress=maintenanceProgress(machine.data);const row=el('div','dash-maintenance');row.append(el('strong','',`Máquina ${machine.data['Nome da máquina']}`),el('span',progress.due?'dash-maintenance-due':'',progress.due?'Manutenção necessária':`${num(progress.remaining)} h restantes`));const track=el('div','dash-bar-track'),fill=el('div',`dash-bar-fill ${progress.due?'red':''}`);fill.style.width=`${progress.percent}%`;track.append(fill);row.append(track);maintenance.append(row);}if(!state.productionMachines.length)maintenance.append(el('p','dash-empty','Nenhuma máquina cadastrada.'));grid.append(maintenance);
+  const machines=panel('Participação das máquinas','Distribuição do uso no mês selecionado.','dash-machines');
+  const machineMode=state.dashboardMachineChart === 'cost' ? 'cost' : 'hours';
+  const machineFormat=machineMode==='hours' ? v=>`${num(v)} h` : money;
+  const machineTabs=el('div','dash-chart-tabs');
+  for(const [key,label] of [['hours','Horas de produção'],['cost','Custo de uso']]) {
+    const tab=button(label,()=>{state.dashboardMachineChart=key;redraw();},`dash-button ${machineMode===key?'selected':''}`);
+    tab.setAttribute('aria-pressed',String(machineMode===key));machineTabs.append(tab);
+  }
+  machines.append(machineTabs);
+  const palette=['#334dcc','#20a59a','#f0ad45','#8c69cd','#dc708a','#4c96cf','#718448','#ab714d'];
+  const machineEntries=[...stats.machines].sort((a,b)=>b[1][machineMode]-a[1][machineMode]);
+  const machineColors=new Map([...stats.machines.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).map((id,index)=>[id,palette[index%palette.length]]));
+  const machineTotal=machineEntries.reduce((sum,[,m])=>sum+Math.max(0,m[machineMode]),0);
+  const machineBody=el('div','dash-machine-body');
+  const chartWrap=el('div','dash-donut-wrap');
+  const pie=document.createElementNS(svg.namespaceURI,'svg');
+  pie.setAttribute('viewBox','0 0 240 240');pie.setAttribute('role','img');
+  pie.setAttribute('aria-label',`Gráfico de pizza: participação das máquinas por ${machineMode==='hours'?'horas de produção':'custo de uso'}. Total: ${machineFormat(machineTotal)}. Valores na legenda.`);
+  pie.classList.add('dash-donut');
+  const circle=document.createElementNS(svg.namespaceURI,'circle');
+  for(const [key,value] of Object.entries({cx:120,cy:120,r:88,fill:'none',stroke:'#edf0f8','stroke-width':32}))circle.setAttribute(key,value);
+  pie.append(circle);
+  let offset=0;
+  const legend=el('div','dash-machine-legend');
+  machineEntries.forEach(([id,machine])=>{
+    const name=state.productionMachines.find(m=>String(m.rowNumber)===id)?.data['Nome da máquina']||machine.name;
+    const value=Math.max(0,machine[machineMode]),share=machineTotal?value/machineTotal:0;
+    const color=machineColors.get(id);
+    if(share>0){
+      const slice=document.createElementNS(svg.namespaceURI,'circle');
+      for(const [key,v] of Object.entries({cx:120,cy:120,r:88,fill:'none',stroke:color,'stroke-width':32,pathLength:100,'stroke-dasharray':`${share*100} ${100-share*100}`,'stroke-dashoffset':-offset,transform:'rotate(-90 120 120)'}))slice.setAttribute(key,v);
+      const title=document.createElementNS(svg.namespaceURI,'title');title.textContent=`${name}: ${machineFormat(value)} (${num(share*100,1)}%)`;slice.append(title);pie.append(slice);
+      offset+=share*100;
+    }
+    const card=el('div','dash-machine');
+    const heading=el('div','dash-machine-heading'),swatch=el('span','dash-swatch');swatch.style.background=color;
+    heading.append(swatch,el('strong','',name),el('b','dash-machine-share',`${num(share*100,1)}%`));
+    card.append(heading,el('span','dash-machine-detail',`${num(machine.hours)} h · ${money(machine.cost)}`));
+    if(compare)card.append(el('small','dash-machine-detail',`${delta(machine[machineMode],previous.machines.get(id)?.[machineMode]||0)} ${machineMode==='hours'?'em horas':'em custo'}`));
+    legend.append(card);
+  });
+  const center=el('div','dash-donut-center');center.append(el('strong','',machineFormat(machineTotal)),el('span','',machineMode==='hours'?'horas distribuídas':'custo distribuído'));
+  chartWrap.append(pie,center);machineBody.append(chartWrap,legend);machines.append(machineBody);
+  if(!machineTotal)machines.append(el('p','dash-empty',`Sem ${machineMode==='hours'?'horas':'custos'} de máquina registrados neste período.`));
+  grid.append(machines);
+  const maintenance=panel('Próximas manutenções','Visão atual da frota · ciclo preventivo de 400 horas, independente do mês selecionado.','dash-maintenance-panel');
+  const maintenanceEntries=state.productionMachines.map(machine=>({machine,progress:maintenanceProgress(machine.data)})).sort((a,b)=>b.progress.hours-a.progress.hours);
+  const dueCount=maintenanceEntries.filter(({progress})=>progress.due).length;
+  const soonCount=maintenanceEntries.filter(({progress})=>!progress.due && progress.remaining<=80).length;
+  const summary=el('div','dash-maintenance-summary');
+  for(const [value,label,tone] of [[dueCount,'Precisam de revisão','urgent'],[soonCount,'Próximas do limite','soon'],[maintenanceEntries.length-dueCount-soonCount,'Dentro do ciclo','healthy']]){
+    const chip=el('span',`dash-status-summary ${tone}`);chip.append(el('strong','',num(value,0)),el('span','',label));summary.append(chip);
+  }
+  maintenance.append(summary);
+  const maintenanceGrid=el('div','dash-maintenance-grid');
+  for(const {machine,progress} of maintenanceEntries){
+    const tone=progress.due?'urgent':progress.remaining<=80?'soon':'healthy';
+    const row=el('article',`dash-maintenance ${tone}`);
+    const heading=el('div','dash-maintenance-heading');
+    heading.append(el('strong','',machine.data['Nome da máquina']||'Máquina sem nome'),el('span',`dash-status ${tone}`,progress.due?'Revisão necessária':tone==='soon'?'Revisão próxima':'Em dia'));
+    row.append(heading,el('span','dash-maintenance-model',machine.data.Modelo||'Manutenção preventiva'));
+    const remaining=el('div','dash-maintenance-remaining');remaining.append(el('strong','',num(progress.remaining)),el('span','','h até a revisão'));row.append(remaining);
+    const track=el('div','dash-bar-track'),fill=el('div',`dash-bar-fill ${progress.due?'red':tone==='soon'?'amber':'green'}`);fill.style.width=`${progress.percent}%`;track.append(fill);
+    const description=`${num(progress.hours)} de 400 h utilizadas`;
+    track.setAttribute('role','progressbar');track.setAttribute('aria-label',`${machine.data['Nome da máquina']}: ${description}`);track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');track.setAttribute('aria-valuenow',String(progress.percent));track.setAttribute('aria-valuetext',description);
+    const foot=el('div','dash-maintenance-foot');foot.append(el('span','',description),el('strong','',`${num(progress.percent,0)}%`));
+    row.append(track,foot);maintenanceGrid.append(row);
+  }
+  maintenance.append(maintenanceGrid);
+  if(!maintenanceEntries.length)maintenance.append(el('p','dash-empty','Nenhuma máquina cadastrada. Cadastre sua frota para acompanhar as próximas revisões.'));
+  grid.append(maintenance);
   const notes=el('details','dash-method');notes.append(el('summary','','Como os indicadores são calculados'),el('p','','Consumo, custos e horas incluem apenas lotes finalizados. Peças contam produtos de lotes concluídos, excluindo produções avulsas e quantidades parciais não confirmadas. Custos incluem filamento e máquinas; o desperdício estimado em reais inclui somente filamento. Não há cálculo de lucro. Dias sem registros contam como zero nas projeções.'));root.append(notes);
 }

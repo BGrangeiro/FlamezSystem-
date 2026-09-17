@@ -1,3 +1,5 @@
+import {renderProductionPresets} from './production-presets.js';
+import { renderMaterialStock } from './material-stock.js';
 import { renderProductStock } from './product-stock.js';
 import { deliveryTotals, renderDeliveryHistory, openDeliveryDialog } from './order-deliveries.js';
 import { renderCompanyExpenses } from './company-expenses.js';
@@ -7,10 +9,14 @@ import { renderMonthlyPanel } from './monthly-panel.js';
 import { renderFilamentSettings, prepareFilamentPhoto } from './filament-settings.js';
 import { MACHINE_HEADERS, calculateMachineCost, normalizeMachineData, machineNumber, maintenanceProgress } from "./machine-costs.js";
 import { renderProduction } from "./production.js";
+import { renderAutomaticProduction, stopAutomaticProduction } from './automatic-production.js';
+import { renderAutomaticProductionLog } from './automatic-production-log.js';
 
 const SHEETS = {
   companyExpenses: {title: 'Custos da empresa'},
+  productionPresets: {title:'SKU padronizado',headers:['Código','Produto','SKU','Produto ID','Quantidade','Horas']},
   productStock: {title:'Estoque de produtos'},
+  materialStock: {title:'Estoque de materiais',primary:'Material',headers:['Material','Quantidade','Unidade','Observações','Foto','Link de compra']},
   painel: {title: "Painel do mês"},
   produtos: {
     title: "Produtos",
@@ -150,6 +156,7 @@ const LOCAL_AUTOSAVE_DELAY_MS = 700;
 
 const state = {
   machineTab: 'cloud',
+  productionTab: 'registered',
   filamentTab: 'stock',
   activeSheet: "produtos",
   authenticationEnabled: false,
@@ -189,6 +196,8 @@ const elements = {
   content: document.querySelector("#content"),
   machineTabs: document.querySelector('#machineTabs'),
   machineTabButtons: [...document.querySelectorAll('[data-machine-tab]')],
+  productionTabs: document.querySelector('#productionTabs'),
+  productionTabButtons: [...document.querySelectorAll('[data-production-tab]')],
   toolbar: document.querySelector('.toolbar'),
   variationDialog: document.querySelector("#variationDialog"),
   variationSource: document.querySelector("#variationSource"),
@@ -868,6 +877,9 @@ async function saveRow(sheet, rowNumber, data, button) {
     state.draft = null;
     state.draftMeta = null;
     if (sheet === "maquinas") state.editingMachines.delete(String(payload.rowNumber));
+    if (sheet === 'productionPresets') state.editingPresets?.delete(String(payload.rowNumber));
+    if (sheet === 'productStock') state.editingProductStock?.delete(data.SKU);
+    if (sheet === 'materialStock') state.editingMaterials?.delete(String(payload.rowNumber));
     if (sheet === 'reposicao') editingParts.delete(String(payload.rowNumber));
     if (sheet === "producao") state.editingProduction.delete(`production:${payload.rowNumber}`);
     if (sheet === "encomendas") {
@@ -2713,12 +2725,23 @@ function renderGenericTable() {
 function render() {
   stopBambuMonitor();
   stopBambuUsageLog();
+  stopAutomaticProduction();
   const isMachines = state.activeSheet === 'maquinas';
   const isCloud = isMachines && state.machineTab === 'cloud';
+  const isProduction = state.activeSheet === 'producao';
+  const isAutomaticProduction = isProduction && state.productionTab === 'automatic';
+  const isReadOnlyProduction = isProduction && state.productionTab !== 'registered';
   elements.machineTabs.classList.toggle('hidden', !isMachines);
-  elements.toolbar.classList.toggle('hidden', isMachines && state.machineTab !== 'registered');
+  elements.productionTabs.classList.toggle('hidden', !isProduction);
+  elements.toolbar.classList.toggle('hidden', (isMachines && state.machineTab !== 'registered') || isReadOnlyProduction);
   elements.machineTabButtons.forEach(button => {
     const selected = button.dataset.machineTab === state.machineTab;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  elements.productionTabButtons.forEach(button => {
+    const selected = button.dataset.productionTab === state.productionTab;
     button.classList.toggle('active', selected);
     button.setAttribute('aria-selected', String(selected));
     button.tabIndex = selected ? 0 : -1;
@@ -2726,20 +2749,23 @@ function render() {
   if (isMachines) {
     elements.content.setAttribute('role', 'tabpanel');
     elements.content.setAttribute('aria-labelledby', isCloud ? 'machineCloudTab' : state.machineTab === 'log' ? 'machineLogTab' : 'machineRegisteredTab');
+  } else if (isProduction) {
+    elements.content.setAttribute('role', 'tabpanel');
+    elements.content.setAttribute('aria-labelledby', state.productionTab === 'automatic' ? 'productionAutomaticTab' : state.productionTab === 'log' ? 'productionLogTab' : 'productionRegisteredTab');
   } else {
     elements.content.removeAttribute('role');
     elements.content.removeAttribute('aria-labelledby');
   }
   const config = SHEETS[state.activeSheet];
-  elements.viewTitle.textContent = config.title;
+  elements.viewTitle.textContent = state.activeSheet === 'productionPresets' ? 'Produtos' : config.title;
   elements.tabs.forEach((tab) => {
-    const active = tab.dataset.sheet === state.activeSheet;
+    const active = tab.dataset.sheet === (state.activeSheet === 'productionPresets' ? 'produtos' : state.activeSheet);
     tab.classList.toggle("active", active);
     if (active) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
   });
-  elements.addButton.classList.toggle("hidden",['painel','productStock'].includes(state.activeSheet));
-  elements.searchInput.classList.toggle("hidden",state.activeSheet === "painel");
+  elements.addButton.classList.toggle("hidden",['painel','productStock'].includes(state.activeSheet) || isReadOnlyProduction);
+  elements.searchInput.classList.toggle("hidden",state.activeSheet === "painel" || isReadOnlyProduction);
   elements.variationButton.classList.toggle("hidden", state.activeSheet !== "produtos");
   elements.addButton.textContent = state.activeSheet === "produtos"
     ? "Novo produto"
@@ -2751,7 +2777,7 @@ function render() {
           ? "Nova produção"
           : state.activeSheet === "reposicao"
             ? "Nova peça"
-          : state.activeSheet === 'companyExpenses' ? 'Novo gasto' : "Adicionar linha";
+          : state.activeSheet === 'productionPresets' ? 'Novo padrão' : state.activeSheet === 'materialStock' ? 'Novo material' : state.activeSheet === 'companyExpenses' ? 'Novo gasto' : "Adicionar linha";
 
   if (state.loading) {
     elements.content.innerHTML = `<div class="empty-state"><h2>Carregando...</h2><p>Buscando os dados.</p></div>`;
@@ -2760,6 +2786,10 @@ function render() {
 
   if (state.activeSheet === 'companyExpenses') {
     renderCompanyExpenses({state, elements, saveRow, deleteRow, formatMoney, todayInputValue});
+  } else if (state.activeSheet === 'productionPresets') {
+    renderProductionPresets({state,elements,saveRow,deleteRow});
+  } else if (state.activeSheet === 'materialStock') {
+    renderMaterialStock({state,elements,saveRow,deleteRow});
   } else if (state.activeSheet === 'productStock') {
     renderProductStock({state,elements,saveRow,setStatus});
   } else if (state.activeSheet === "painel") {
@@ -2771,7 +2801,9 @@ function render() {
   } else if (state.activeSheet === "maquinas") {
     renderMachines();
   } else if (state.activeSheet === "producao") {
-    renderProduction({ state, elements, escapeHtml, formatMoney, formatNumber, formatDateDisplay, productKey, render, saveRow, deleteRow, removeProductionItem, todayInputValue });
+    if (state.productionTab === 'automatic') renderAutomaticProduction(elements.content, api, state.productionProducts);
+    else if (state.productionTab === 'log') renderAutomaticProductionLog(elements.content, state.rows, formatDateDisplay);
+    else renderProduction({ state, elements, escapeHtml, formatMoney, formatNumber, formatDateDisplay, productKey, render, saveRow, deleteRow, removeProductionItem, todayInputValue });
   } else if (state.activeSheet === 'reposicao') {
     renderPartsStock();
   } else if (state.activeSheet === 'filamentos') {
@@ -2810,6 +2842,19 @@ function render() {
   } else {
     renderGenericTable();
   }
+  if (['produtos','productionPresets'].includes(state.activeSheet)) {
+    const nav=document.createElement('nav');nav.className='product-section-tabs';nav.setAttribute('aria-label','Seções de Produtos');
+    for(const [sheet,title] of [['produtos','Produtos'],['productionPresets','SKU padronizado']]) {
+      const button=document.createElement('button');button.type='button';button.textContent=title;
+      const selected=state.activeSheet===sheet;
+      button.className=`product-section-tab${selected?' active':''}`;
+      if(selected)button.setAttribute('aria-current','page');
+      button.onclick=()=>{if(!selected){elements.searchInput.value='';loadSheet(sheet);}};
+      nav.append(button);
+    }
+    elements.content.prepend(nav);
+  }
+
 }
 
 async function initializeSession() {
@@ -2840,6 +2885,11 @@ async function loadSheet(sheet = state.activeSheet) {
 
   try {
     const payload = await api(`/api/sheets?sheet=${encodeURIComponent(sheet === "painel" ? "producao" : sheet)}`);
+    if(sheet === 'productionPresets') {
+      const products=await api('/api/sheets?sheet=produtos');
+      if(requestId !== state.loadRequestId)return;
+      state.presetProducts=products.rows||[];
+    }
     if(sheet === 'productStock') {
       const products = await api('/api/sheets?sheet=produtos');
       if(requestId !== state.loadRequestId) return;
@@ -2858,6 +2908,9 @@ async function loadSheet(sheet = state.activeSheet) {
       state.productionMachines = machines.rows || [];
     }
     if (sheet === "producao") {
+      const presets=await api('/api/sheets?sheet=productionPresets');
+      if(requestId !== state.loadRequestId)return;
+      state.productionPresets=presets.rows||[];
       const filaments=await api("/api/sheets?sheet=filamentos");
       state.productionFilaments=filaments.rows||[];
       const products = await api("/api/sheets?sheet=produtos");
@@ -2936,6 +2989,21 @@ elements.machineTabButtons.forEach((button, index) => {
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + count) % count;
     elements.machineTabButtons[next].focus();
     elements.machineTabButtons[next].click();
+  });
+});
+elements.productionTabButtons.forEach((button, index) => {
+  button.addEventListener('click', () => {
+    if (state.productionTab === button.dataset.productionTab) return;
+    state.productionTab = button.dataset.productionTab;
+    state.editingProduction.clear(); state.draft = null; render();
+  });
+  button.addEventListener('keydown', event => {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const count = elements.productionTabButtons.length;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + count) % count;
+    elements.productionTabButtons[next].focus(); elements.productionTabButtons[next].click();
   });
 });
 elements.searchInput.addEventListener("input", render);

@@ -27,6 +27,7 @@
           <button class="tab" data-sheet="filamentos" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="m6 6 4 4m4 4 4 4m0-12-4 4m-4 4-4 4"/></svg><span>Filamentos</span></button>
           <button class="tab" data-sheet="maquinas" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8V3h12v5M6 17H4V8h16v9h-2"/><path d="M7 14h10v7H7zM16 11h1"/></svg><span>Máquinas</span></button>
           <button class="tab" data-sheet="productStock" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 7 9-4 9 4v10l-9 4-9-4V7Z"/><path d="m3 7 9 4 9-4M12 11v10M7 5l10 4"/></svg><span>Estoque de produtos</span></button>
+          <button class="tab" data-sheet="materialStock" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 7 9-4 9 4v10l-9 4-9-4V7Z"/><path d="m3 7 9 4 9-4M12 11v10M7 5l10 4"/></svg><span>Estoque de materiais</span></button>
           <button class="tab" data-sheet="reposicao" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a5 5 0 0 0-6.3 6.3L3 18l3 3 5.2-5.2a5 5 0 0 0 6.3-6.3L14 13l-3-3 3.5-3.5Z"/></svg><span>Peças</span></button>
           <button class="tab" data-sheet="painel" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 3v18h17M8 17v-5m5 5V7m5 10V4"/></svg><span>Painel do mês</span></button>
           <button class="tab" data-sheet="companyExpenses" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M16 14h2M7 5V3h10v2"/></svg><span>Custos da empresa</span></button>
@@ -55,6 +56,12 @@
           <button id="machineCloudTab" class="product-section-tab active" data-machine-tab="cloud" type="button" role="tab" aria-selected="true" aria-controls="content">Bambu Cloud</button>
           <button id="machineRegisteredTab" class="product-section-tab" data-machine-tab="registered" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Máquinas cadastradas</button>
           <button id="machineLogTab" class="product-section-tab" data-machine-tab="log" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Log</button>
+        </nav>
+
+        <nav id="productionTabs" class="product-section-tabs production-section-tabs hidden" role="tablist" aria-label="Seções de produção">
+          <button id="productionRegisteredTab" class="product-section-tab active" data-production-tab="registered" type="button" role="tab" aria-selected="true" aria-controls="content">Produção registrada</button>
+          <button id="productionAutomaticTab" class="product-section-tab" data-production-tab="automatic" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Produção automática</button>
+          <button id="productionLogTab" class="product-section-tab" data-production-tab="log" type="button" role="tab" aria-selected="false" aria-controls="content" tabindex="-1">Log automático</button>
         </nav>
 
         <section class="toolbar">
