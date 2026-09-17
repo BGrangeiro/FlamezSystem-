@@ -2104,3 +2104,9 @@ select[data-priority] option { color:var(--ink); background:white; }
 .material-stock-card > .row-actions { justify-content:center; flex-wrap:wrap; gap:10px; padding-top:4px; }
 .material-stock-card > .row-actions > * { min-height:40px; font-size:13px; font-weight:600; }
 @media(max-width:540px) { .material-stock-card { padding:22px 18px; gap:18px; }.material-stock-card h3 { font-size:18px; } }
+
+/* Compact filament selection aligned with the existing SKU control. */
+.production-item .filament-picker-trigger { min-height:0; height:43px; padding:4px 12px; border-radius:8px; }
+.production-item .filament-picker-selected { gap:1px; overflow:hidden; }
+.production-item .filament-picker-selected strong { font-size:12px; line-height:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.production-item .filament-picker-selected small { font-size:10px; line-height:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

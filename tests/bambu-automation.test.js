@@ -158,3 +158,52 @@ test('manual reopening cannot be completed again by old cloud reports or ledger'
   assert.equal(row.data['Status da produção'],'Em produção');
   assert.equal(row.data._bambuManualOutcome,'true');
 });
+
+test('editing metadata during an active automatic print does not disable completion', () => {
+ const s=make();registerCloudMachines(s,[device]);recordCloudReport(s,{...device,updatedAt:1000});
+ const row=s.producao.rows[0],previous=structuredClone(row);row.data.Observações='Nota manual';
+ bindProduction(s,row,previous,2000);
+ recordCloudReport(s,{...device,state:'FINISH',updatedAt:61000},true);
+ assert.equal(row.data['Status da produção'],'Concluída');
+ assert.match(row.data.Observações,/Nota manual/);
+});
+
+test('cloud updates preserve a product selected manually while a print is active', () => {
+ const s=make();s.produtos.rows.push({rowNumber:3,data:{SKU:'B02',Produto:'Produto escolhido'}});
+ registerCloudMachines(s,[device]);recordCloudReport(s,{...device,updatedAt:1000});
+ const row=s.producao.rows[0],previous=structuredClone(row);
+ const item=JSON.parse(row.data['Itens da produção'])[0];
+ Object.assign(item,{productRow:3,sku:'B02',name:'Produto escolhido',quantity:6});
+ row.data['Itens da produção']=JSON.stringify([item]);bindProduction(s,row,previous,2000);
+ recordCloudReport(s,{...device,state:'FINISH',updatedAt:61000},true);
+ const saved=JSON.parse(row.data['Itens da produção'])[0];
+ assert.equal(saved.productRow,3);assert.equal(saved.sku,'B02');assert.equal(saved.quantity,6);
+ assert.equal(row.data['Código do produto'],'B02');assert.equal(row.data['Status da produção'],'Concluída');
+});
+test('repeated automatic alerts never duplicate observation lines', () => {
+ const s=make();registerCloudMachines(s,[device]);
+ for(const updatedAt of [1000,61000,121000,181000])recordCloudReport(s,{...device,updatedAt,alerts:['Erro Bambu TEST']},true);
+ const lines=s.producao.rows[0].data.Observações.split('\n');
+ assert.equal(lines.length,1);
+});
+test('mixed results charge actual failed consumption instead of the full planned amount', () => {
+ const s=make();const row=production(2);s.producao.rows.push(row);
+ s.maquinas.rows.push({rowNumber:3,data:{}});
+ s.maquinas.rows[0].data._bambuJobs=JSON.stringify({ok:{state:'FINISH',hours:1}});
+ s.maquinas.rows[1].data._bambuJobs=JSON.stringify({failed:{state:'FAILED',hours:0.5}});
+ const item=JSON.parse(row.data['Itens da produção'])[0];
+ row.data['Itens da produção']=JSON.stringify([{...item,bambuJobKey:'ok'},{...item,machineRow:3,bambuJobKey:'failed',failureWaste:30}]);
+ completeCloudProductions(s);
+ const result=JSON.parse(row.data['Itens da produção']);
+ assert.equal(row.data['Status da produção'],'Parcial');
+ assert.equal(result[1].used,0);assert.equal(result[1].waste,30);assert.equal(result[1].total,1.5);
+});
+
+test('automatic failure uses real failed consumption for previously completed input data', () => {
+ const s=make();registerCloudMachines(s,[device]);recordCloudReport(s,{...device,updatedAt:1000});
+ const row=s.producao.rows[0],entry=JSON.parse(row.data['Itens da produção'])[0];
+ row.data['Itens da produção']=JSON.stringify([{...entry,quantity:2,plannedUsed:100,plannedFilamentTotal:10,used:100,total:10,failureWaste:20}]);
+ recordCloudReport(s,{...device,state:'FAILED',updatedAt:61000},true);
+ const result=JSON.parse(row.data['Itens da produção'])[0];
+ assert.equal(result.used,0);assert.equal(result.waste,20);assert.equal(result.total,2);
+});
