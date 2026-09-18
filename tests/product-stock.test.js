@@ -23,3 +23,9 @@ test('estoque por cor rejeita cores repetidas, quantidades e fotos inválidas',(
   assert.throws(()=>normalizeProductStock({SKU:'A01',Quantidade:'-1'}));
   assert.throws(()=>normalizeProductStock({SKU:'A01',Cores:'[]',Foto:'https://example.com/photo.png'}));
 });
+
+test('produto avulso preserva nome, não possui SKU e usa o mesmo estoque por cor',()=>{
+  const result=normalizeProductStock({Avulso:'true',Produto:'  Protótipo especial  ',SKU:'IGNORAR',Cores:JSON.stringify([{color:'Teste',quantity:3}])});
+  assert.equal(result.Produto,'Protótipo especial');assert.equal(result.SKU,'');assert.equal(result.Avulso,'true');assert.equal(result.Quantidade,'3');
+  assert.throws(()=>normalizeProductStock({Avulso:'true',Produto:'',Cores:'[]'}),/nome do produto avulso/i);
+});

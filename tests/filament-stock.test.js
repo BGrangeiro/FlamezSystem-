@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-test('produção movimenta estoque e horas sem duplicar baixas', async () => {
+test('estoque manual e produção registram entradas e saídas sem duplicação', async () => {
   const dir=await mkdtemp(path.join(tmpdir(),'flamez-stock-'));
   try {
     await cp(new URL('../lib',import.meta.url),path.join(dir,'lib'),{recursive:true});
@@ -15,6 +15,12 @@ test('produção movimenta estoque e horas sem duplicar baixas', async () => {
     await writeFile(path.join(dir,'server.js'),source.split('const server = createServer(')[0]+'\nexport {upsertLocalRow,readLocalSheets,deleteLocalRow,removeProductionItem,mutate};');
     const api=await import(pathToFileURL(path.join(dir,'server.js')));
     await api.upsertLocalRow('filamentos',2,{'Tipo de filamento':'PLA',Marca:'Masterprint',Cor:'Branco','Custo médio por kg':'100','Estoque atual (kg)':'1'});
+    let filamentLogs=(await api.readLocalSheets()).sheets.filamentLog.rows;
+    assert.equal(filamentLogs.length,1);assert.equal(filamentLogs[0].data.Movimento,'Entrada');assert.equal(filamentLogs[0].data.Origem,'Manual');assert.equal(filamentLogs[0].data['Quantidade (g)'],'1000');
+    await api.upsertLocalRow('filamentos',2,{'Tipo de filamento':'PLA',Marca:'Masterprint',Cor:'Branco','Custo médio por kg':'100','Estoque atual (kg)':'1.2'});
+    await api.upsertLocalRow('filamentos',2,{'Tipo de filamento':'PLA',Marca:'Masterprint',Cor:'Branco','Custo médio por kg':'100','Estoque atual (kg)':'1'});
+    filamentLogs=(await api.readLocalSheets()).sheets.filamentLog.rows;
+    assert.deepEqual(filamentLogs.slice(-2).map(row=>[row.data.Movimento,row.data['Quantidade (g)']]),[['Entrada','200'],['Saída','200']]);
     await api.upsertLocalRow('maquinas',2,{'Nome da máquina':'01','Horas de uso':'100','Valor de aquisição':'1000','Vida útil estimada (h)':'1000'});
     await api.upsertLocalRow('produtos',2,{Produto:'Gancho',SKU:'A01'});
     const stock=await api.upsertLocalRow('productStock',2,{SKU:'A01',Quantidade:'99',Cores:JSON.stringify([{color:'Branco',quantity:4},{color:'Preto',quantity:6}]),Foto:'data:image/png;base64,aGVsbG8='});
@@ -31,10 +37,11 @@ test('produção movimenta estoque e horas sem duplicar baixas', async () => {
     const state=async()=>{const {sheets:s}=await api.readLocalSheets();return {kg:Number(s.filamentos.rows[0].data['Estoque atual (kg)']),hours:Number(s.maquinas.rows[0].data['Horas totais (h)']),logs:s.filamentLog.rows.length,s};};
     await save('Em produção');assert.equal((await state()).kg,1);assert.equal((await state()).hours,100);
     await save('Concluída');assert.equal((await state()).kg,.7);assert.equal((await state()).hours,110);
-    await save('Concluída');assert.equal((await state()).kg,.7);assert.equal((await state()).logs,1);
+    await save('Concluída');assert.equal((await state()).kg,.7);assert.equal((await state()).logs,4);
+    assert.equal((await state()).s.filamentLog.rows.at(-1).data.Movimento,'Saída');assert.equal((await state()).s.filamentLog.rows.at(-1).data.Origem,'Manual');
     await save('Falhou',[{...item,failureWaste:40,failureHours:2}]);assert.equal((await state()).kg,.96);assert.equal((await state()).hours,102);
-    assert.equal((await state()).s.filamentLog.rows.at(-1).data.Movimento,'Estorno');
-    await save('Falhou',[{...item,failureWaste:40,failureHours:2}]);assert.equal((await state()).logs,2);
+    assert.equal((await state()).s.filamentLog.rows.at(-1).data.Movimento,'Entrada');
+    await save('Falhou',[{...item,failureWaste:40,failureHours:2}]);assert.equal((await state()).logs,5);
     await save('Em produção');assert.equal((await state()).kg,1);
     await save('Parcial',[{...item,waste:40}]);assert.equal((await state()).kg,.7);
     await assert.rejects(save('Concluída',[{...item,used:1500}]),/Estoque insuficiente/);assert.equal((await state()).kg,.7);

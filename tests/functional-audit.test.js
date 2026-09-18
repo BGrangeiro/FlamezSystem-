@@ -57,8 +57,17 @@ test('persistência isolada: cadastros, alterações, exclusões e status ao rec
    await api.deleteLocalRow('materialStock',material.rowNumber);assert.equal((await list('materialStock')).length,0);
   });
   const product=await save('produtos',{SKU:'A01',Produto:'Gancho'});
+  await t.test('produtos a testar: link genérico, edição, persistência e exclusão',async()=>{
+   const candidate=await save('productTests',{Produto:'Ideia da Shopee',Link:'shopee.com.br/produto/123'});
+   assert.equal(candidate.data.Link,'https://shopee.com.br/produto/123');
+   await save('productTests',{Produto:'Arquivo no Drive',Link:'https://drive.google.com/file/d/abc'},candidate.rowNumber);
+   const persisted=(await list('productTests'))[0];
+   assert.equal(persisted.data.Produto,'Arquivo no Drive');assert.equal(persisted.data.Link,'https://drive.google.com/file/d/abc');
+   await assert.rejects(save('productTests',{Produto:'Link perigoso',Link:'file:///segredo'}));
+   await api.deleteLocalRow('productTests',candidate.rowNumber);assert.equal((await list('productTests')).length,0);
+  });
   await t.test('padrões: concorrência, edição, persistência e referência ao produto',async()=>{
-   const input={'Produto ID':String(product.rowNumber),Quantidade:'4',Horas:'2.5'};
+   const input={'Produto ID':String(product.rowNumber),Quantidade:'4',Horas:'2.5','Filamento (g)':'120'};
    await Promise.all(Array.from({length:5},()=>save('productionPresets',input)));
    const rows=await list('productionPresets');assert.deepEqual(rows.map(r=>r.data.Código),['A01-1','A01-2','A01-3','A01-4','A01-5']);
    await save('productionPresets',{...input,Quantidade:'8'},rows[0].rowNumber);
@@ -70,6 +79,10 @@ test('persistência isolada: cadastros, alterações, exclusões e status ao rec
    assert.equal((await list('productStock'))[0].data.Quantidade,'10');
    await save('productStock',{...r.data,Cores:JSON.stringify([{color:'Branco',quantity:2}])},r.rowNumber);
    assert.equal((await list('productStock'))[0].data.Quantidade,'2');
+   const standalone=await save('productStock',{Avulso:'true',Produto:'Protótipo avulso',Cores:JSON.stringify([{color:'Teste',quantity:3}])});
+   const standaloneSaved=(await list('productStock')).find(row=>row.rowNumber===standalone.rowNumber);
+   assert.equal(standaloneSaved.data.SKU,'');assert.equal(standaloneSaved.data.Produto,'Protótipo avulso');assert.equal(standaloneSaved.data.Quantidade,'3');
+   await api.deleteLocalRow('productStock',standalone.rowNumber);
   });
   await save('filamentos',{Marca:'Teste',Cor:'Branco','Custo médio por kg':'100','Estoque atual (kg)':'5'},2);
   await save('maquinas',{'Nome da máquina':'01','Horas iniciais (h)':'0'},2);

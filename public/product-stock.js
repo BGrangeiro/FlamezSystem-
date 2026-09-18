@@ -3,20 +3,23 @@ import {stockColors,normalizeProductStock} from './product-stock-data.js';
 const el=(tag,cls='',text='')=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
 const button=(text,action,cls='ghost-light-button')=>{const n=el('button',cls,text);n.type='button';n.onclick=action;return n;};
 export function renderProductStock(ctx) {
-  const {state,elements,saveRow,setStatus}=ctx;
+  const {state,elements,saveRow,deleteRow,setStatus}=ctx;
   state.editingProductStock ??= new Set();
   const redraw=()=>renderProductStock(ctx);
   elements.content.replaceChildren();
-  const grid=el('div','product-stock-grid'),products=new Map();
+  const grid=el('div','product-stock-grid'),products=new Map(),entries=[];
   const term=elements.searchInput.value.trim().toLocaleLowerCase();
   for(const product of state.stockProducts||[]){const sku=String(product.data.SKU||'').trim();if(sku&&!products.has(sku))products.set(sku,product.data.Produto||sku);}
-  elements.content.append(el('p','machine-formula','Consulte fotos e quantidades por cor. Clique em Fazer alterações para editar e em Salvar estoque para confirmar.'));
-  for(const [sku,name] of products){
-    const existing=state.rows.find(row=>row.data.SKU===sku);
+  for(const [sku,name] of products)entries.push({sku,name,existing:state.rows.find(row=>row.data.SKU===sku),standalone:false,key:`sku:${sku}`});
+  for(const existing of state.rows.filter(row=>row.data.Avulso==='true'))entries.push({sku:'',name:existing.data.Produto,existing,standalone:true,key:`row:${existing.rowNumber}`});
+  if(state.draft?.data?.Avulso==='true')entries.unshift({sku:'',name:'Novo produto avulso',existing:null,data:state.draft.data,standalone:true,key:'draft'});
+  elements.content.append(el('p','machine-formula','Consulte fotos e quantidades por cor. Produtos avulsos podem ser cadastrados aqui sem SKU.'));
+  for(const entry of entries){
+    const {sku,name,existing,standalone,key}=entry,source=existing?.data||entry.data||{};
     if(term&&!`${sku} ${name} ${existing?.data.Cores||''}`.toLocaleLowerCase().includes(term))continue;
-    if(!state.editingProductStock.has(sku)) {
+    if(existing&& !state.editingProductStock.has(key)) {
       const card=el('article','product-stock-card product-stock-summary'),header=el('div','stock-card-heading'),identity=el('div');
-      identity.append(el('h3','',name),el('strong','stock-sku',sku));
+      identity.append(el('h3','',name),el('strong',`stock-sku${standalone?' stock-no-sku':''}`,standalone?'Produto sem SKU':sku));
       if(existing?.data.Foto){const photo=el('img','material-stock-photo');photo.src=existing.data.Foto;photo.alt=`Foto de ${name}`;photo.loading='lazy';header.append(photo);}
       else header.append(el('div','material-stock-placeholder','Sem foto'));
       header.append(identity);card.append(header);
@@ -28,10 +31,10 @@ export function renderProductStock(ctx) {
         card.append(list);
         if(!colors.length)card.append(el('p','stock-color-empty','Nenhuma quantidade cadastrada.'));
       }catch{card.append(el('p','stock-feedback','Não foi possível ler as cores deste produto.'));}
-      card.append(button('Fazer alterações',()=>{state.editingProductStock.add(sku);redraw();},'primary-button'));grid.append(card);continue;
+      card.append(button('Fazer alterações',()=>{state.editingProductStock.add(key);redraw();},'primary-button'));grid.append(card);continue;
     }
-    const form=el('form','product-stock-card product-stock-summary');grid.append(form);
-    let colors;try{colors=stockColors(existing?.data);}catch{form.append(el('p','','Não foi possível ler as cores deste produto.'));continue;}
+    const form=el('form',`product-stock-card product-stock-summary${standalone?' product-stock-standalone-editor':''}`);grid.append(form);
+    let colors;try{colors=stockColors(source);}catch{form.append(el('p','','Não foi possível ler as cores deste produto.'));continue;}
     const info=button('',()=>{
       if(popover.matches(':popover-open'))popover.hidePopover();
       else {popover.showPopover();positionInfo();}
@@ -41,7 +44,7 @@ export function renderProductStock(ctx) {
     const popover=el('div','stock-info-popover');popover.id=`stock-info-${grid.children.length}`;popover.setAttribute('popover','auto');popover.setAttribute('role','region');info.setAttribute('aria-controls',popover.id);
     const infoHeader=el('div','stock-info-header'),infoTitle=el('strong','','Estoque por cor / tipo');infoTitle.id=popover.id+'-title';popover.setAttribute('aria-labelledby',infoTitle.id);
     const close=button('×',()=>popover.hidePopover(),'stock-info-close');close.setAttribute('aria-label','Fechar informações');infoHeader.append(infoTitle,close);
-    popover.append(infoHeader,el('p','stock-info-product',`${name} · ${sku}`));
+    popover.append(infoHeader,el('p','stock-info-product',standalone?`${name} · Produto sem SKU`:`${name} · ${sku}`));
     const breakdown=el('dl','stock-info-list');
     for(const item of colors){const line=el('div','stock-info-line');line.append(el('dt','',item.color),el('dd','',`${Number(item.quantity).toLocaleString('pt-BR')} un`));breakdown.append(line);}
     if(colors.length)popover.append(breakdown);else popover.append(el('p','stock-info-empty','Nenhuma cor ou tipo cadastrado.'));
@@ -53,12 +56,14 @@ export function renderProductStock(ctx) {
     };
     popover.addEventListener('toggle',event=>{const open=event.newState==='open';info.setAttribute('aria-expanded',String(open));});
     form.append(info,popover);
-    let photo=existing?.data.Foto||'',processing=false;
-    const header=el('div','stock-card-heading'),identity=el('div');identity.append(el('h3','',name),el('strong','stock-sku',sku));
+    let photo=source.Foto||'',processing=false;
+    const header=el('div','stock-card-heading'),identity=el('div');identity.append(el('h3','',name),el('strong',`stock-sku${standalone?' stock-no-sku':''}`,standalone?'Produto sem SKU':sku));
     const image=el('img','stock-product-photo');image.alt=`Foto de ${name}`;image.loading='lazy';
     const photoButton=button('Adicionar foto',()=>upload.click(),'stock-photo-button');
     const upload=el('input');upload.type='file';upload.accept='image/jpeg,image/png,image/webp';upload.hidden=true;upload.setAttribute('aria-label',`Foto de ${name}`);
     const updatePhoto=()=>{photoButton.replaceChildren();if(photo){image.src=photo;photoButton.append(image);}else photoButton.textContent='+ Foto';photoButton.title=photo?'Trocar foto':'Adicionar foto';photoButton.setAttribute('aria-label',`${photo?'Trocar':'Adicionar'} foto de ${name}`);};updatePhoto();header.append(photoButton,identity);
+    const productName=el('input');productName.type='text';productName.maxLength=160;productName.required=standalone;productName.value=standalone?(source.Produto||''):name;productName.placeholder='Ex.: Protótipo de suporte';
+    const productNameLabel=el('label','field','Nome do produto avulso');productNameLabel.append(productName);productNameLabel.hidden=!standalone;
     const label=el('div','stock-quantity-label','Quantidade em estoque (un)');
     const total=el('span','stock-total-value','0');
     const details=el('details','stock-color-details'),summary=el('summary','stock-quantity-toggle');
@@ -85,16 +90,20 @@ export function renderProductStock(ctx) {
     const save=el('button','primary-button','Salvar estoque');save.type='submit';
     const feedback=el('p','stock-feedback');feedback.setAttribute('role','status');
     upload.onchange=async()=>{if(!upload.files[0])return;processing=true;save.disabled=true;photoButton.disabled=true;feedback.textContent='Preparando foto…';try{photo=await prepareFilamentPhoto(upload.files[0]);updatePhoto();removePhoto.hidden=false;feedback.textContent='Foto pronta. Clique em Salvar estoque.';}catch(e){feedback.textContent=e.message;}finally{processing=false;save.disabled=false;photoButton.disabled=false;upload.value='';}};
-    form.append(header,upload,label,details,feedback,save,button('Cancelar',()=>{state.editingProductStock.delete(sku);redraw();}));
+    const cancel=button('Cancelar',()=>{state.editingProductStock.delete(key);if(key==='draft')state.draft=null;redraw();});
+    const footer=el('div','row-actions');
+    if(standalone&&existing)footer.append(button('Excluir produto',()=>deleteRow('productStock',existing.rowNumber),'danger-button'));
+    footer.append(save,cancel);
+    form.append(header,upload,productNameLabel,label,details,feedback,footer);
     details.open=true;
     form.addEventListener('invalid',()=>{details.open=true;},true);
     form.onsubmit=async event=>{event.preventDefault();if(processing)return;
       try{
-        const data=normalizeProductStock({SKU:sku,Cores:JSON.stringify(rows.map(row=>({color:row.color.value,quantity:row.quantity.value}))),Foto:photo});
-        feedback.textContent='';await saveRow('productStock',existing?.rowNumber??null,data,save);
+        const data=normalizeProductStock({SKU:sku,Produto:standalone?productName.value:'',Avulso:standalone?'true':'',Cores:JSON.stringify(rows.map(row=>({color:row.color.value,quantity:row.quantity.value}))),Foto:photo},source);
+        feedback.textContent='';state.editingProductStock.delete(key);await saveRow('productStock',existing?.rowNumber??null,data,save);
       }catch(e){details.open=true;feedback.textContent=e.message;setStatus(e.message,'error');}
     };
   }
-  if(!grid.children.length)grid.append(el('p','empty-state',term?'Nenhum SKU encontrado.':'Cadastre produtos com SKU na aba Produtos para informar o estoque.'));
+  if(!grid.children.length)grid.append(el('p','empty-state',term?'Nenhum produto encontrado.':'Cadastre um produto com SKU ou adicione um produto avulso.'));
   elements.content.append(grid);
 }

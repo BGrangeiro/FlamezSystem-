@@ -1,4 +1,6 @@
 import {renderProductionPresets} from './production-presets.js';
+import {renderProductTests} from './product-tests.js';
+import {collectFilamentBrands} from './filament-brands.js';
 import { renderMaterialStock } from './material-stock.js';
 import { renderProductStock } from './product-stock.js';
 import { deliveryTotals, renderDeliveryHistory, openDeliveryDialog } from './order-deliveries.js';
@@ -14,7 +16,8 @@ import { renderAutomaticProductionLog } from './automatic-production-log.js';
 
 const SHEETS = {
   companyExpenses: {title: 'Custos da empresa'},
-  productionPresets: {title:'SKU padronizado',headers:['Código','Produto','SKU','Produto ID','Quantidade','Horas']},
+  productionPresets: {title:'SKU padronizado',headers:['Código','Produto','SKU','Produto ID','Quantidade','Horas','Filamento (g)']},
+  productTests: {title:'Produtos a testar',headers:['Produto','Link']},
   productStock: {title:'Estoque de produtos'},
   materialStock: {title:'Estoque de materiais',primary:'Material',headers:['Material','Quantidade','Unidade','Observações','Foto','Link de compra']},
   painel: {title: "Painel do mês"},
@@ -878,6 +881,7 @@ async function saveRow(sheet, rowNumber, data, button) {
     state.draftMeta = null;
     if (sheet === "maquinas") state.editingMachines.delete(String(payload.rowNumber));
     if (sheet === 'productionPresets') state.editingPresets?.delete(String(payload.rowNumber));
+    if (sheet === 'productTests') state.editingProductTests?.delete(String(payload.rowNumber));
     if (sheet === 'productStock') state.editingProductStock?.delete(data.SKU);
     if (sheet === 'materialStock') state.editingMaterials?.delete(String(payload.rowNumber));
     if (sheet === 'reposicao') editingParts.delete(String(payload.rowNumber));
@@ -2685,7 +2689,19 @@ function renderGenericTable() {
         input.inputMode = 'decimal'; input.dataset.rawValue = input.value; input.value = maxTwoDecimalStock(input.value);
         input.addEventListener('input',()=>{input.dataset.stockDirty='true';});
         input.addEventListener('blur',()=>{if(input.dataset.stockDirty==='true')input.value=maxTwoDecimalStock(input.value);});
-        td.append(input);
+        const control=document.createElement('div');control.className='filament-stock-control';
+        if(!isDraft) {
+          input.readOnly=true;input.setAttribute('aria-label','Estoque atual em kg. Clique em Alterar estoque para editar.');
+          const unlock=document.createElement('button');unlock.type='button';unlock.className='filament-stock-unlock';unlock.title='Alterar estoque';unlock.setAttribute('aria-label','Alterar estoque');
+          unlock.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/><path d="m15 5 3 3"/></svg>';
+          unlock.onclick=()=>{
+            if(input.readOnly){input.readOnly=false;input.dataset.stockUnlocked='true';unlock.dataset.mode='save';unlock.title='Salvar estoque';unlock.setAttribute('aria-label','Salvar estoque');unlock.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 7"/></svg>';input.focus();input.select();return;}
+            tr.querySelector('[data-save-filament-row]')?.click();
+          };
+          input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();unlock.click();}});
+          control.append(input,unlock);
+        } else control.append(input);
+        td.append(control);
       } else if(state.activeSheet === 'filamentos' && header === 'Custo médio por kg') {
         const currency = document.createElement('div'); currency.className = 'filament-currency';
         const prefix = document.createElement('span'); prefix.textContent = 'R$';
@@ -2707,6 +2723,7 @@ function renderGenericTable() {
     saveButton.className = "small-button";
     saveButton.type = "button";
     saveButton.textContent = "Salvar";
+    if(state.activeSheet==='filamentos')saveButton.dataset.saveFilamentRow='true';
     saveButton.addEventListener("click", () => {
       const data = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.dataset.rawValue !== undefined && input.dataset.stockDirty !== 'true' ? input.dataset.rawValue : input.value.trim()]));
       saveRow(state.activeSheet, isDraft ? null : row.rowNumber, data, saveButton);
@@ -2757,14 +2774,15 @@ function render() {
     elements.content.removeAttribute('aria-labelledby');
   }
   const config = SHEETS[state.activeSheet];
-  elements.viewTitle.textContent = state.activeSheet === 'productionPresets' ? 'Produtos' : config.title;
+  const productSection = ['produtos','productionPresets','productTests'].includes(state.activeSheet);
+  elements.viewTitle.textContent = productSection ? 'Produtos' : config.title;
   elements.tabs.forEach((tab) => {
-    const active = tab.dataset.sheet === (state.activeSheet === 'productionPresets' ? 'produtos' : state.activeSheet);
+    const active = tab.dataset.sheet === (productSection ? 'produtos' : state.activeSheet);
     tab.classList.toggle("active", active);
     if (active) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
   });
-  elements.addButton.classList.toggle("hidden",['painel','productStock'].includes(state.activeSheet) || isReadOnlyProduction);
+  elements.addButton.classList.toggle("hidden",state.activeSheet === 'painel' || isReadOnlyProduction);
   elements.searchInput.classList.toggle("hidden",state.activeSheet === "painel" || isReadOnlyProduction);
   elements.variationButton.classList.toggle("hidden", state.activeSheet !== "produtos");
   elements.addButton.textContent = state.activeSheet === "produtos"
@@ -2777,7 +2795,7 @@ function render() {
           ? "Nova produção"
           : state.activeSheet === "reposicao"
             ? "Nova peça"
-          : state.activeSheet === 'productionPresets' ? 'Novo padrão' : state.activeSheet === 'materialStock' ? 'Novo material' : state.activeSheet === 'companyExpenses' ? 'Novo gasto' : "Adicionar linha";
+          : state.activeSheet === 'productionPresets' ? 'Novo padrão' : state.activeSheet === 'productTests' ? 'Novo produto para testar' : state.activeSheet === 'productStock' ? 'Adicionar produto avulso' : state.activeSheet === 'materialStock' ? 'Novo material' : state.activeSheet === 'companyExpenses' ? 'Novo gasto' : "Adicionar linha";
 
   if (state.loading) {
     elements.content.innerHTML = `<div class="empty-state"><h2>Carregando...</h2><p>Buscando os dados.</p></div>`;
@@ -2788,10 +2806,12 @@ function render() {
     renderCompanyExpenses({state, elements, saveRow, deleteRow, formatMoney, todayInputValue});
   } else if (state.activeSheet === 'productionPresets') {
     renderProductionPresets({state,elements,saveRow,deleteRow});
+  } else if (state.activeSheet === 'productTests') {
+    renderProductTests({state,elements,saveRow,deleteRow,render});
   } else if (state.activeSheet === 'materialStock') {
     renderMaterialStock({state,elements,saveRow,deleteRow});
   } else if (state.activeSheet === 'productStock') {
-    renderProductStock({state,elements,saveRow,setStatus});
+    renderProductStock({state,elements,saveRow,deleteRow,setStatus});
   } else if (state.activeSheet === "painel") {
     renderMonthlyPanel({state,elements,formatMoney,formatNumber,todayInputValue});
   } else if (state.activeSheet === "produtos") {
@@ -2828,9 +2848,12 @@ function render() {
         for(const [day,rows] of groups){
           const section=document.createElement('details');section.className='production-item';section.open=true;
           const title=document.createElement('summary');title.textContent=day+' · '+rows.length+' movimentações';section.append(title);
-          for(const {data:r} of rows){const card=document.createElement('article');card.className='filament-log-entry';
-            const heading=document.createElement('strong');heading.textContent=r.Movimento+' · '+formatNumber(Number(r['Quantidade (g)']))+' g · '+r.Filamento;
-            const desc=document.createElement('p');desc.textContent=r.Produção+' · '+r.Status+' · Produção: '+r['Dia da produção']+' · Saldo: '+formatNumber(Number(r['Saldo (kg)']))+' kg';card.append(heading,desc);section.append(card);}
+          for(const {data:r} of rows){const outgoing=['Saída','Baixa'].includes(r.Movimento);const card=document.createElement('article');card.className=`filament-log-entry ${outgoing?'filament-log-out':'filament-log-in'}`;
+            const heading=document.createElement('div');heading.className='filament-log-heading';
+            const amount=document.createElement('strong');amount.textContent=r.Movimento+' · '+formatNumber(Number(r['Quantidade (g)']))+' g · '+r.Filamento;
+            const origin=document.createElement('span');origin.className=`filament-log-origin${r.Origem==='Automática'?' automatic':''}`;origin.textContent=r.Origem||'Manual';heading.append(amount,origin);
+            const parts=[r.Produção,r.Status,r['Dia da produção']?`Produção: ${r['Dia da produção']}`:'',`Saldo: ${formatNumber(Number(r['Saldo (kg)']))} kg`].filter(Boolean);
+            const desc=document.createElement('p');desc.textContent=parts.join(' · ');card.append(heading,desc);section.append(card);}
           host.append(section);
         }
       }).catch(e=>{host.textContent=e.message;});
@@ -2842,9 +2865,9 @@ function render() {
   } else {
     renderGenericTable();
   }
-  if (['produtos','productionPresets'].includes(state.activeSheet)) {
+  if (['produtos','productionPresets','productTests'].includes(state.activeSheet)) {
     const nav=document.createElement('nav');nav.className='product-section-tabs';nav.setAttribute('aria-label','Seções de Produtos');
-    for(const [sheet,title] of [['produtos','Produtos'],['productionPresets','SKU padronizado']]) {
+    for(const [sheet,title] of [['produtos','Produtos'],['productionPresets','SKU padronizado'],['productTests','Produtos a testar']]) {
       const button=document.createElement('button');button.type='button';button.textContent=title;
       const selected=state.activeSheet===sheet;
       button.className=`product-section-tab${selected?' active':''}`;
@@ -2900,7 +2923,7 @@ async function loadSheet(sheet = state.activeSheet) {
       if(requestId !== state.loadRequestId)return;
       state.productionMachines=machines.rows||[];
       state.productionFilaments=filaments.rows||[];
-      state.filamentBrands=[...new Set((filamentSettings.rows||[]).map(row=>row.data.Marca).filter(Boolean))];
+      state.filamentBrands=collectFilamentBrands(filamentSettings.rows,filaments.rows);
     }
     if (sheet === "painel") {
       const machines = await api("/api/sheets?sheet=maquinas");
@@ -3013,6 +3036,7 @@ elements.addButton.addEventListener("click", () => {
   const headers = state.headers.length ? state.headers : (SHEETS[state.activeSheet].headers || []);
   const data = Object.fromEntries(headers.map((header) => [header, ""]));
   if (state.activeSheet === "producao") data["Dia produção"] = todayInputValue();
+  if (state.activeSheet === 'productStock') { data.Avulso='true'; data.Cores='[]'; }
   if (state.activeSheet === "encomendas") {
     if ("Data do pedido" in data) data["Data do pedido"] = todayInputValue();
     if ("Status do processo" in data) data["Status do processo"] = "Parado";

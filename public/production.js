@@ -406,7 +406,7 @@ export function renderProduction(ctx) {
       const presetLabel=node('label','field');presetLabel.append(node('span','','SKU padronizado'));
       const presetSelect=node('select');presetSelect.append(new Option('Selecione um padrão',''));
       const available=(state.productionPresets||[]).filter(p=>state.productionProducts.some(product=>String(product.rowNumber)===String(p.data['Produto ID'])));
-      for(const preset of available)presetSelect.append(new Option(`${preset.data.Código} · ${preset.data.Produto} · ${preset.data.Quantidade} un · ${preset.data.Horas} h`,String(preset.rowNumber)));
+      for(const preset of available){const grams=Number(preset.data['Filamento (g)']);presetSelect.append(new Option(`${preset.data.Código} · ${preset.data.Produto} · ${preset.data.Quantidade} un · ${preset.data.Horas} h · ${grams>0?`${grams.toLocaleString('pt-BR',{maximumFractionDigits:2})} g`:'filamento não informado'}`,String(preset.rowNumber)));}
       presetLabel.append(presetSelect);presetLabel.hidden=true;
       const sources=node('div','product-section-tabs');
       const normal=button('Produto / SKU',()=>source(false),'product-section-tab active');
@@ -422,7 +422,7 @@ export function renderProduction(ctx) {
       }
       presetSelect.onchange=()=>{
         const preset=available.find(p=>String(p.rowNumber)===presetSelect.value);entry.presetCode=preset?.data.Código||'';
-        if(preset){const values=presetValues(preset);select.value=values.productId;quantity.input.value=values.quantity;hours.input.value=values.hours;}
+        if(preset){const values=presetValues(preset);select.value=values.productId;quantity.input.value=values.quantity;hours.input.value=values.hours;entry.stockGrams.value=values.filament;}
         refresh();
       };
       if(snapshot?.productionPresetRow){presetSelect.value=String(snapshot.productionPresetRow);if(presetSelect.value){source(true);entry.presetCode=snapshot.productionPresetCode||'';}}

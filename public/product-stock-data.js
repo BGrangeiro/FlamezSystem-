@@ -26,5 +26,8 @@ export function normalizeProductStock(data, previous = {}) {
   if(!Number.isSafeInteger(total))throw invalid('Quantidade total acima do limite permitido.');
   const photo=data.Foto ?? previous.Foto ?? '';
   if(photo && (typeof photo!=='string'||photo.length>2000000||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(photo)))throw invalid('Foto inválida. Escolha uma imagem JPG, PNG ou WebP.');
-  return {SKU:String(data.SKU||previous.SKU||'').trim(),Quantidade:String(total),Cores:JSON.stringify(colors),Foto:photo};
+  const standalone=String(data.Avulso ?? previous.Avulso ?? '')==='true';
+  const product=String(data.Produto ?? previous.Produto ?? '').trim().replace(/\s+/g,' ');
+  if(standalone&&(!product||product.length>160))throw invalid('Informe o nome do produto avulso com até 160 caracteres.');
+  return {SKU:standalone?'':String(data.SKU||previous.SKU||'').trim(),Produto:standalone?product:'',Avulso:standalone?'true':'',Quantidade:String(total),Cores:JSON.stringify(colors),Foto:photo};
 }

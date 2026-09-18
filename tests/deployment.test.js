@@ -89,7 +89,7 @@ test('HTTP: login, proteção de API, CSRF, limites, dados privados e logout',as
     assert.equal(JSON.parse(savedOrder.data._deliveries).length,2);
     assert.equal((await post('/api/sheets/upsert',{sheet:'encomendas',rowNumber:order.rowNumber,data:{...order.data,'Quantidade de itens':'1'}})).status,400);
     const presetProduct=(await (await fetch(base+'/api/sheets?sheet=produtos',{headers})).json()).rows[0];
-    const presetInput={sheet:'productionPresets',data:{'Produto ID':String(presetProduct.rowNumber),Quantidade:'6',Horas:'1,25'}};
+    const presetInput={sheet:'productionPresets',data:{'Produto ID':String(presetProduct.rowNumber),Quantidade:'6',Horas:'1,25','Filamento (g)':'150'}};
     const presetResponses=await Promise.all([post('/api/sheets/upsert',presetInput),post('/api/sheets/upsert',presetInput)]);
     assert.deepEqual(presetResponses.map(r=>r.status),[200,200]);
     const presets=await (await fetch(base+'/api/sheets?sheet=productionPresets',{headers})).json();

@@ -1,6 +1,15 @@
 import { machineNumber } from './machine-costs.js';
 const invalid = message => Object.assign(new Error(message), {statusCode:400});
 export const filamentName = row => ['Marca','Tipo de filamento','Tipo do material','Cor'].map(k=>row.data[k]).filter(Boolean).join(' · ');
+const nextLogRow = rows => Math.max(1,...rows.map(row=>Number(row.rowNumber)||1))+1;
+export function appendFilamentLog(sheets, data) {
+  const logs=sheets.filamentLog.rows;
+  logs.push({rowNumber:nextLogRow(logs),data:{
+    Data:new Date().toISOString(),
+    'Dia da produção':'',Produção:'',Filamento:'',Movimento:'',
+    'Quantidade (g)':'','Saldo (kg)':'',Status:'',Origem:'Manual',...data
+  }});
+}
 export function validateStockItems(items, stock) {
   for(const item of items) {
     const filament=stock.find(r=>String(r.rowNumber)===String(item.filamentStockRow));
@@ -45,7 +54,7 @@ export function reconcileFilamentStock(previous, next) {
     const stock=next.filamentos.rows.find(r=>String(r.rowNumber)===c.stockId);
     const balance=Math.max(0,Math.round((machineNumber(stock.data['Estoque atual (kg)'])-c.delta/1000)*1e9)/1e9);
     stock.data['Estoque atual (kg)']=balance.toFixed(9);
-    const logs=next.filamentLog.rows;
-    logs.push({rowNumber:Math.max(1,...logs.map(r=>r.rowNumber))+1,data:{Data:new Date().toISOString(),'Dia da produção':c.row.data['Dia produção'],Produção:`${c.row.data['Código do produto'] || 'Produção'} (#${c.id})`,Filamento:filamentName(stock),Movimento:c.delta>0?'Baixa':'Estorno','Quantidade (g)':String(Math.abs(c.delta)),'Saldo (kg)':String(balance),Status:c.removed?'Produção removida':c.row.data['Status da produção']}});
+    const automatic=(c.row.data._bambuAutomatic==='true'||c.row.data._bambuAutomaticOutcome==='true')&&c.row.data._bambuManualOutcome!=='true';
+    appendFilamentLog(next,{ 'Dia da produção':c.row.data['Dia produção'],Produção:`${c.row.data['Código do produto'] || 'Produção'} (#${c.id})`,Filamento:filamentName(stock),Movimento:c.delta>0?'Saída':'Entrada','Quantidade (g)':String(Math.abs(c.delta)),'Saldo (kg)':String(balance),Status:c.removed?'Produção removida':c.delta<0?'Filamento devolvido ao estoque':c.row.data['Status da produção'],Origem:automatic?'Automática':'Manual'});
   }
 }

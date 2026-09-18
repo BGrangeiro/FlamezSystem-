@@ -50,6 +50,8 @@ test('finished job counts physical hours once, completes bound production and de
   assert.equal(p.data['Status da produção'], 'Concluída');
   assert.ok(Math.abs(Number(s.maquinas.rows[0].data['Horas totais (h)']) - 101) < 0.00001);
   assert.equal(Number(s.filamentos.rows[0].data['Estoque atual (kg)']), .7);
+  assert.equal(s.filamentLog.rows[0].data.Movimento,'Saída');
+  assert.equal(s.filamentLog.rows[0].data.Origem,'Automática');
   const saved = structuredClone(s);
   recordCloudReport(s, { ...device, state: 'FINISH', updatedAt: 3661000 }, true);
   completeCloudProductions(s); updateMachineHours(s); reconcileFilamentStock(saved, s);
@@ -179,6 +181,18 @@ test('cloud updates preserve a product selected manually while a print is active
  const saved=JSON.parse(row.data['Itens da produção'])[0];
  assert.equal(saved.productRow,3);assert.equal(saved.sku,'B02');assert.equal(saved.quantity,6);
  assert.equal(row.data['Código do produto'],'B02');assert.equal(row.data['Status da produção'],'Concluída');
+});
+
+test('cloud completion preserves quantity, hours and filament from a standardized SKU', () => {
+ const s=make();registerCloudMachines(s,[device]);recordCloudReport(s,{...device,updatedAt:1000});
+ const row=s.producao.rows[0],previous=structuredClone(row),item=JSON.parse(row.data['Itens da produção'])[0];
+ Object.assign(item,{quantity:12,plannedUsed:300,used:300,plannedFilamentTotal:15,total:15,plannedHours:2.5,
+  filamentStockRow:2,filamentBrand:'Test',filamentColor:'Branco',productionPresetRow:'2',productionPresetCode:'A01-1'});
+ row.data['Itens da produção']=JSON.stringify([item]);bindProduction(s,row,previous,2000);
+ recordCloudReport(s,{...device,state:'FINISH',updatedAt:61000},true);
+ const saved=JSON.parse(row.data['Itens da produção'])[0];
+ assert.equal(saved.quantity,12);assert.equal(saved.plannedUsed,300);assert.equal(saved.used,300);
+ assert.equal(saved.productionPresetCode,'A01-1');assert.equal(row.data['Peso (g)'],'300');
 });
 test('repeated automatic alerts never duplicate observation lines', () => {
  const s=make();registerCloudMachines(s,[device]);

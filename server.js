@@ -1,4 +1,5 @@
 import {normalizePreset, PRESET_HEADERS} from './public/production-presets.js';
+import {normalizeProductTest, PRODUCT_TEST_HEADERS} from './public/product-tests.js';
 import { normalizeMaterial } from './public/material-stock.js';
 import { normalizeProductStock } from './public/product-stock-data.js';
 import { addDelivery, deliveryTotals } from './public/order-deliveries.js';
@@ -13,7 +14,7 @@ import { readJson, writeJson, configureStorage } from './lib/storage.js';
 import { createAuth, sameSecret } from './lib/auth.js';
 import { acquireLock } from './lib/lock.js';
 import { loadEnvFile } from 'node:process';
-import { reconcileFilamentStock, validateStockItems } from './public/filament-stock.js';
+import { appendFilamentLog, filamentName, reconcileFilamentStock, validateStockItems } from './public/filament-stock.js';
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -67,10 +68,11 @@ const mimeTypes = {
 
 const DEFAULT_LOCAL_SHEETS = {
   productionPresets: {sheet:'productionPresets',sheetName:'SKU padronizado',headers:PRESET_HEADERS,rows:[]},
+  productTests: {sheet:'productTests',sheetName:'Produtos a testar',headers:PRODUCT_TEST_HEADERS,rows:[]},
   materialStock: {sheet:'materialStock',sheetName:'Estoque de materiais',headers:['Material','Quantidade','Unidade','Observações','Foto','Link de compra'],rows:[]},
   companyExpenses: {sheet: 'companyExpenses', sheetName: 'Custos da empresa', headers: EXPENSE_HEADERS, rows: []},
-  filamentLog: {sheet:'filamentLog',sheetName:'Log de filamentos',headers:['Data','Dia da produção','Produção','Filamento','Movimento','Quantidade (g)','Saldo (kg)','Status'],rows:[]},
-  productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Quantidade','Cores','Foto'],rows:[]},
+  filamentLog: {sheet:'filamentLog',sheetName:'Log de filamentos',headers:['Data','Dia da produção','Produção','Filamento','Movimento','Quantidade (g)','Saldo (kg)','Status','Origem'],rows:[]},
+  productStock: {sheet:'productStock',sheetName:'Estoque de produtos',headers:['SKU','Produto','Avulso','Quantidade','Cores','Foto'],rows:[]},
   filamentSettings: {
     sheet: "filamentSettings",
     sheetName: "Configurações de filamento",
@@ -170,9 +172,11 @@ const DEFAULT_LOCAL_SHEETS = {
 };
 
 function migrateLocalSheet(key, sheet) {
+  if (key === 'productionPresets') return { ...sheet, headers: PRESET_HEADERS };
   if(key === 'companyExpenses') return {...sheet, headers: EXPENSE_HEADERS};
   if(key === 'productStock') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.productStock.headers};
   if(key === 'filamentSettings') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.filamentSettings.headers};
+  if(key === 'filamentLog') return {...sheet,headers:DEFAULT_LOCAL_SHEETS.filamentLog.headers};
   if (key === "maquinas") {
     return { ...sheet, headers: MACHINE_HEADERS, rows: sheet.rows.map((row) => ({
       ...row, data: normalizeMachineData(row.data || {})
@@ -215,6 +219,18 @@ async function readLocalSheets() {
       rows: Array.isArray(saved.rows) ? saved.rows : []
     });
   });
+
+  for(const log of sheets.filamentLog.rows) {
+    if(log.data.Movimento==='Baixa') log.data.Movimento='Saída';
+    if(log.data.Movimento==='Estorno') log.data.Movimento='Entrada';
+    if(log.data.Origem) continue;
+    const productionId=String(log.data.Produção||'').match(/\(#(\d+)\)/)?.[1];
+    const production=sheets.producao.rows.find(row=>String(row.rowNumber)===productionId);
+    let hasCloudJob=false;
+    try {hasCloudJob=JSON.parse(production?.data['Itens da produção']||'[]').some(item=>item.bambuJobKey);} catch {}
+    const automatic=production?.data._bambuManualOutcome!=='true'&&(production?.data._bambuAutomatic==='true'||production?.data._bambuAutomaticOutcome==='true'||hasCloudJob);
+    log.data.Origem=automatic?'Automática':'Manual';
+  }
 
   updateMachineHours(sheets);
   return {
@@ -274,6 +290,7 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
   }
 
   if(sheetKey === 'productionPresets') rowData = normalizePreset(rowData,data.sheets.produtos.rows,sheet.rows,sheet.rows.find(row=>Number(row.rowNumber)===Number(rowNumber))?.data);
+  if(sheetKey === 'productTests') rowData = normalizeProductTest(rowData);
   if(sheetKey === 'materialStock') rowData = normalizeMaterial(rowData);
   if(sheetKey === 'filamentLog') throw Object.assign(new Error('O Log é somente leitura.'),{statusCode:400});
   if(sheetKey === 'companyExpenses') rowData = normalizeExpense(rowData, sheet.rows.find(row => Number(row.rowNumber) === Number(rowNumber))?.data);
@@ -301,10 +318,12 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     const sku = String(rowData.SKU || '').trim();
     rowData = normalizeProductStock(rowData,sheet.rows.find(row=>row.rowNumber===targetRowNumber)?.data);
     const quantity = Number(rowData.Quantidade);
-    if(!sku || !Number.isSafeInteger(quantity) || quantity < 0) throw Object.assign(new Error('Informe um SKU e uma quantidade inteira maior ou igual a zero.'),{statusCode:400});
-    if(!data.sheets.produtos.rows.some(row=>String(row.data.SKU || '').trim() === sku)) throw Object.assign(new Error('Este SKU não está cadastrado em Produtos.'),{statusCode:400});
-    if(sheet.rows.some(row=>row.rowNumber !== targetRowNumber && row.data.SKU === sku)) throw Object.assign(new Error('Este SKU já possui estoque. Atualize a página para editar a quantidade existente.'),{statusCode:400});
-    rowData={...rowData,SKU:sku,Quantidade:String(quantity)};
+    const standalone=rowData.Avulso==='true';
+    if(!Number.isSafeInteger(quantity) || quantity < 0) throw Object.assign(new Error('Informe uma quantidade inteira maior ou igual a zero.'),{statusCode:400});
+    if(!standalone&&!sku)throw Object.assign(new Error('Informe um SKU ou cadastre este item como produto avulso.'),{statusCode:400});
+    if(!standalone&&!data.sheets.produtos.rows.some(row=>String(row.data.SKU || '').trim() === sku)) throw Object.assign(new Error('Este SKU não está cadastrado em Produtos.'),{statusCode:400});
+    if(!standalone&&sheet.rows.some(row=>row.rowNumber !== targetRowNumber && row.data.SKU === sku)) throw Object.assign(new Error('Este SKU já possui estoque. Atualize a página para editar a quantidade existente.'),{statusCode:400});
+    rowData={...rowData,SKU:standalone?'':sku,Quantidade:String(quantity)};
   }
   if (sheetKey === 'filamentSettings') {
     const invalid = message => Object.assign(new Error(message), {statusCode:400});
@@ -395,6 +414,13 @@ async function upsertLocalRow(sheetKey, rowNumber, rowData) {
     }
   }
   if (sheetKey === 'producao') bindProduction(data.sheets, nextRow, sheet.rows[existingIndex]);
+
+  if(sheetKey === 'filamentos') {
+    const before=existingIndex>=0?machineNumber(sheet.rows[existingIndex].data['Estoque atual (kg)']):0;
+    const after=machineNumber(nextRow.data['Estoque atual (kg)']);
+    const delta=Math.round((after-before)*1e9)/1e9;
+    if(delta) appendFilamentLog(data.sheets,{Produção:'Alteração manual do estoque',Filamento:filamentName(nextRow),Movimento:delta>0?'Entrada':'Saída','Quantidade (g)':String(Math.abs(delta)*1000),'Saldo (kg)':String(after),Status:existingIndex>=0?`Saldo alterado de ${before} kg para ${after} kg`:'Estoque inicial cadastrado',Origem:'Manual'});
+  }
 
   if (existingIndex >= 0) {
     sheet.rows[existingIndex] = nextRow;
