@@ -4,6 +4,12 @@ Sistema de gestão para produção em impressão 3D: produtos, custos, encomenda
 
 **O projeto está preparado para instalação; nenhuma publicação é feita automaticamente.** Não existe integração com Google Planilhas. Os links do Google Drive para baixar modelos STL/3MF continuam funcionando.
 
+## Hospedagem com banco SQLite
+
+O [passo a passo para a VPS Hostinger](docs/HOSTINGER-PASSO-A-PASSO.md) inclui banco SQLite persistente, migração dos registros JSON, autenticação, HTTPS e backups. Execute `npm run hosting:package` para gerar o pacote de código sem dados privados. `npm run setup:production` cria credenciais e configuração para `compose.hostinger.yaml` sem sobrescrever configurações existentes.
+
+Instalações sem configuração usam JSON. Nesta instalação local, os dados foram migrados e conferidos em SQLite em 17/09/2026; o `.env` privado seleciona `STORAGE_BACKEND=sqlite` e backups diários. Para migrar outra instalação, pare o servidor, faça backup, configure `DATA_DIR` e execute `npm run db:migrate -- --confirm`; depois use `STORAGE_BACKEND=sqlite`. O banco `DATA_DIR/flamez.sqlite3` guarda os registros de negócio, incluindo gastos e entregas parciais. Os comandos de backup/restauração funcionam com ambos os formatos; as exportações continuam em JSON. A sessão Bambu permanece em arquivos privados separados. Não alterne de volta para JSON depois de migrar: os JSON anteriores são apenas cópias históricas.
+
 ## Requisitos e execução local
 
 - Node.js **22.16 ou superior**; use a versão 22 LTS atualizada na hospedagem.
@@ -140,7 +146,7 @@ Em produção, a inicialização falha quando faltam as configurações obrigat�
 
 ## Dados, atualização e backup
 
-A persistência continua em JSON, preservando a compatibilidade dos registros existentes:
+A persistência usa o backend selecionado em `STORAGE_BACKEND`. No SQLite, os quatro documentos de gestão abaixo ficam dentro de `flamez.sqlite3`; no modo JSON, são arquivos separados. As exportações e backups mantêm a compatibilidade entre ambos os formatos:
 
 | Arquivo | Conteúdo |
 | --- | --- |
@@ -152,7 +158,7 @@ A persistência continua em JSON, preservando a compatibilidade dos registros ex
 
 O nome histórico `sheets` identifica a estrutura interna de dados; não representa conexão com um serviço externo. Os arquivos ficam em `DATA_DIR`; localmente, sem essa variável, permanecem na raiz do projeto. As fotos de filamentos são armazenadas junto dos dados. Arquivos de modelo permanecem no Google Drive e dependem das permissões do link.
 
-As gravações usam arquivo temporário, sincronização e troca atômica por arquivo. Uma fila serializa alterações e uma trava impede duas instâncias no mesmo diretório. Arquivos corrompidos geram erro em vez de serem substituídos silenciosamente por dados vazios. Esta versão usa **um servidor e um disco persistente**; não está configurada para múltiplas réplicas ou banco gerenciado.
+No modo JSON, as gravações usam arquivo temporário, sincronização e troca atômica por arquivo. No SQLite, os documentos relacionados são gravados em transação, com WAL e sincronização completa. Uma fila serializa alterações e uma trava impede duas instâncias no mesmo diretório. Dados corrompidos geram erro em vez de serem substituídos silenciosamente por registros vazios. Esta versão usa **um servidor e um disco persistente**; não está configurada para múltiplas réplicas ou banco gerenciado.
 
 Com o servidor **parado** e `DATA_DIR` correto:
 
@@ -198,7 +204,7 @@ A integração antiga do Apps Script, seu arquivo de configuração e a logo ant
 
 ## Login e reconhecimento por IP
 
-O acesso único desta instalação foi configurado como `Flamez3D` em `.env`, com a senha armazenada somente como hash. As credenciais não são incluídas no GitHub: configure-as também ao transferir para hospedagem.
+O assistente de configuração de produção usa o usuário `Flamez3D` e armazena a senha somente como hash. As credenciais não são incluídas no GitHub: configure-as ao transferir para hospedagem. O modo local sem credenciais fica limitado a `127.0.0.1`.
 
 Usuário e senha de acesso aceitam letras maiúsculas ou minúsculas; os demais caracteres precisam corresponder. O botão de olho permite mostrar ou ocultar a senha digitada. Gere os hashes usando a versão atual de `npm run credentials`, que aplica essa mesma regra antes de calcular o hash. Hashes antigos, gerados com letras maiúsculas antes dessa alteração, precisam ser regenerados.
 

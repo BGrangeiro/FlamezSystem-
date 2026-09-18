@@ -1,0 +1,52 @@
+# VPS dedicada com portas 80/443 disponíveis. Não altera o compose.yaml existente.
+name: flamez
+services:
+  flamez:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 5177
+      DATA_DIR: /var/lib/flamez
+      STORAGE_BACKEND: sqlite
+      TRUSTED_PROXY_IPS: 172.30.77.2
+    volumes:
+      - /var/lib/flamez:/var/lib/flamez
+    networks:
+      flamez_net: {ipv4_address: 172.30.77.3}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      flamez: {condition: service_healthy}
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Configure APP_DOMAIN no arquivo .env}
+    ports: ['80:80', '443:443']
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      flamez_net: {ipv4_address: 172.30.77.2}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+networks:
+  flamez_net:
+    ipam:
+      config: [{subnet: 172.30.77.0/24, ip_range: 172.30.77.128/25}]
+volumes:
+  caddy_data:
+  caddy_config:

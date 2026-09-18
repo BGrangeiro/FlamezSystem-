@@ -1,5 +1,7 @@
 # Instalação na Hostinger
 
+Para uma instalação nova na VPS informada, use [o roteiro completo com SQLite e HTTPS automático](HOSTINGER-PASSO-A-PASSO.md). O roteiro abaixo continua como alternativa systemd/Nginx e documentação do modo JSON. Para SQLite nessa alternativa, acrescente `STORAGE_BACKEND=sqlite` ao ambiente e migre os registros antes de iniciar o serviço.
+
 Este documento prepara uma publicação futura. Nenhuma conta, domínio ou hospedagem foi alterada.
 
 ## Escolha do ambiente

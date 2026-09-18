@@ -1,0 +1,5 @@
+{$APP_DOMAIN} {
+    reverse_proxy flamez:5177 {
+        header_up X-Forwarded-For {remote_host}
+    }
+}

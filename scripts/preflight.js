@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { loadConfig } from '../lib/config.js';
-import { readJson } from '../lib/storage.js';
+import { readJson, inspectStorage } from '../lib/storage.js';
 import { backupFiles } from '../lib/backup.js';
 
 export async function preflight(env = process.env) {
@@ -28,7 +28,9 @@ export async function preflight(env = process.env) {
     } catch { errors.push(`Crie a pasta de ${label} e dê permissão de escrita ao usuário do serviço.`); }
     finally { if (probe) await unlink(probe).catch(() => {}); }
   }
-  for (const file of backupFiles) {
+  try { await inspectStorage({backend: config.storageBackend, dataDir: config.dataDir}); }
+  catch (error) { errors.push(error.message); }
+  for (const file of config.storageBackend === 'json' ? backupFiles : []) {
     try { await readJson(path.join(config.dataDir, file), {}); }
     catch { errors.push(`Arquivo inválido: ${file}. Restaure uma cópia íntegra.`); }
   }

@@ -9,7 +9,7 @@ import { createBambuUsage } from './lib/bambu-usage.js';
 import { createBackupScheduler, snapshotBackup } from './lib/backup.js';
 import { registerCloudMachines, bindProduction, recordCloudReport, completeCloudProductions } from './lib/bambu-automation.js';
 import { loadConfig } from './lib/config.js';
-import { readJson, writeJson } from './lib/storage.js';
+import { readJson, writeJson, configureStorage } from './lib/storage.js';
 import { createAuth, sameSecret } from './lib/auth.js';
 import { acquireLock } from './lib/lock.js';
 import { loadEnvFile } from 'node:process';
@@ -26,6 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 if (existsSync(path.join(__dirname, '.env'))) loadEnvFile(path.join(__dirname, '.env'));
 const config=loadConfig();
+configureStorage({backend: config.storageBackend, dataDir: config.dataDir});
 const auth=createAuth(config);
 const bambuUsage = createBambuUsage(config.dataDir);
 const bambuCloud = createBambuCloud({ sessionStore: createBambuSessionStore(config.dataDir), usage: bambuUsage,

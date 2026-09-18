@@ -12,6 +12,9 @@
     "backup": "node scripts/backup.js",
     "backup:verify": "node scripts/backup.js verify",
     "preflight": "node scripts/preflight.js",
+    "db:migrate": "node scripts/migrate-sqlite.js",
+    "setup:production": "node scripts/setup-production.js",
+    "hosting:package": "node scripts/prepare-hosting.js",
     "restore": "node scripts/backup.js restore"
   },
   "engines": {
